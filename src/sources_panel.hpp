@@ -1,0 +1,49 @@
+#pragma once
+
+#include <cstddef>
+#include <exception>
+#include <filesystem>
+#include <functional>
+#include <string>
+#include <vector>
+
+#include <FL/Fl_Group.H>
+
+#include "backup_config.hpp"
+
+class ConfigStore;
+class Fl_Box;
+class Fl_Button;
+class Fl_Input;
+class Fl_Multi_Browser;
+
+class SourcesPanel final : public Fl_Group {
+public:
+    SourcesPanel(int x, int y, int width, int height, BackupConfig& config, const ConfigStore& configStore,
+                 std::function<void()> configChangedCallback);
+
+    void refresh();
+
+private:
+    BackupConfig& config_;
+    const ConfigStore& configStore_;
+    std::function<void()> configChangedCallback_;
+    Fl_Input* searchInput_{};
+    Fl_Button* removeButton_{};
+    Fl_Multi_Browser* sourceBrowser_{};
+    Fl_Box* resultSummary_{};
+    std::vector<std::size_t> visibleSourceIndexes_;
+
+    static void addFilesCallback(Fl_Widget*, void* context);
+    static void addFoldersCallback(Fl_Widget*, void* context);
+    static void removeCallback(Fl_Widget*, void* context);
+    static void searchCallback(Fl_Widget*, void* context);
+    static void selectionCallback(Fl_Widget*, void* context);
+
+    void addFiles();
+    void addFolders();
+    void addSources(const std::vector<std::filesystem::path>& paths, ManualSourceKind kind);
+    void removeSelectedSources();
+    void refreshSelectionState();
+    void reportError(const std::exception& error) const;
+};

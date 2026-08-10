@@ -40,11 +40,14 @@ add_library(back_it_up_tool_core STATIC
     src/backup_config.cpp
     src/config_store.cpp
     src/ignore_rules.cpp
+    src/native_file_dialog.cpp
     src/projects_scanner.cpp
+    src/sources_panel.cpp
     src/state_store.cpp
 )
 target_include_directories(back_it_up_tool_core PUBLIC src)
 target_link_libraries(back_it_up_tool_core PUBLIC
+    fltk::fltk
     unofficial::sqlite3::sqlite3
     nlohmann_json::nlohmann_json
 )
@@ -54,7 +57,6 @@ add_executable(BackItUpTool WIN32
     src/app.rc
 )
 target_link_libraries(BackItUpTool PRIVATE
-    fltk::fltk
     back_it_up_tool_core
     spdlog::spdlog
     comctl32

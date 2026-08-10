@@ -4,7 +4,8 @@ A lightweight Windows tray application for configuring and running personal file
 
 ## Included
 
-- Frameless, draggable FLTK window with a custom header.
+- Resizable FLTK application window with a sidebar for the main sections.
+- Working Manual Sources page with search, bulk removal, and native Windows pickers that can add many files or many folders at once.
 - Tray icon with left-click Open and right-click Open/Exit actions.
 - Tray-only startup and hide-on-close behavior.
 - Low-CPU message loop that continues to dispatch tray events while the FLTK window is hidden.

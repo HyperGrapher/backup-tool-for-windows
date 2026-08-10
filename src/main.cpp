@@ -4,10 +4,10 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
-#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -23,6 +23,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config_store.hpp"
+#include "sources_panel.hpp"
 #include "state_store.hpp"
 
 namespace {
@@ -36,33 +37,18 @@ constexpr UINT kShowApplicationMessage = WM_APP + 2;
 constexpr UINT kTrayOpenCommand = 1;
 constexpr UINT kTrayExitCommand = 2;
 
-constexpr int kWindowWidth = 440;
-constexpr int kWindowHeight = 360;
-constexpr int kHeaderHeight = 54;
-constexpr bool kHideOnFocusLoss = true;
+constexpr int kWindowWidth = 900;
+constexpr int kWindowHeight = 620;
+constexpr int kTopBarHeight = 64;
+constexpr int kSidebarWidth = 170;
+constexpr int kFooterHeight = 38;
 
 const Fl_Color kBackground = fl_rgb_color(17, 23, 32);
 const Fl_Color kHeader = fl_rgb_color(29, 39, 53);
-const Fl_Color kPanel = fl_rgb_color(27, 36, 48);
 const Fl_Color kPanelRaised = fl_rgb_color(42, 55, 72);
 const Fl_Color kText = fl_rgb_color(235, 240, 247);
 const Fl_Color kMuted = fl_rgb_color(149, 164, 182);
 const Fl_Color kAccent = fl_rgb_color(55, 183, 158);
-
-class App;
-
-class MainWindow final : public Fl_Double_Window {
-public:
-    explicit MainWindow(App& app) : Fl_Double_Window(kWindowWidth, kWindowHeight), app_(app) {}
-
-    int handle(int event) override;
-
-private:
-    App& app_;
-    bool isDragging_{};
-    int dragOffsetX_{};
-    int dragOffsetY_{};
-};
 
 class TrayIcon final {
 public:
@@ -121,6 +107,28 @@ public:
 private:
     HANDLE handle_{};
     bool alreadyExists_{};
+};
+
+class ComApartment final {
+public:
+    ComApartment() {
+        result_ = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        if (FAILED(result_)) {
+            throw std::runtime_error("Unable to initialize Windows file dialogs.");
+        }
+    }
+
+    ~ComApartment() {
+        if (SUCCEEDED(result_)) {
+            CoUninitialize();
+        }
+    }
+
+    ComApartment(const ComApartment&) = delete;
+    ComApartment& operator=(const ComApartment&) = delete;
+
+private:
+    HRESULT result_{E_FAIL};
 };
 
 [[nodiscard]] std::filesystem::path applicationDataDirectory() {
@@ -187,7 +195,6 @@ public:
     }
 
     ~App() {
-        Fl::remove_timeout(focusCheckCallback, this);
         spdlog::info("Application stopped");
         spdlog::shutdown();
     }
@@ -204,21 +211,13 @@ public:
     }
 
     void show() {
-        focusGraceUntil_ = std::chrono::steady_clock::now() + std::chrono::milliseconds{600};
-        centerWindow();
+        if (!hasPositionedWindow_) {
+            centerWindow();
+            hasPositionedWindow_ = true;
+        }
         window_->show();
 
         const HWND nativeWindow = fl_xid(window_.get());
-        const LONG_PTR extendedStyle = GetWindowLongPtrW(nativeWindow, GWL_EXSTYLE);
-        SetWindowLongPtrW(nativeWindow, GWL_EXSTYLE, extendedStyle | WS_EX_TOOLWINDOW);
-        SetWindowPos(
-            nativeWindow,
-            nullptr,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
         ShowWindow(nativeWindow, SW_SHOWNORMAL);
         SetForegroundWindow(nativeWindow);
         BringWindowToTop(nativeWindow);
@@ -233,13 +232,6 @@ public:
         }
     }
 
-    void requestFocusCheck() {
-        if constexpr (kHideOnFocusLoss) {
-            Fl::remove_timeout(focusCheckCallback, this);
-            Fl::add_timeout(0.12, focusCheckCallback, this);
-        }
-    }
-
     void requestExit() {
         hide();
         isRunning_ = false;
@@ -251,18 +243,11 @@ private:
     StateStore stateStore_;
     BackupConfig config_;
     TrayIcon tray_;
-    std::unique_ptr<MainWindow> window_;
-    Fl_Box* manualSourceCount_{};
-    Fl_Box* projectsRootCount_{};
-    Fl_Box* destinationCount_{};
-    Fl_Box* routeCount_{};
-    Fl_Box* configPath_{};
+    std::unique_ptr<Fl_Double_Window> window_;
+    SourcesPanel* sourcesPanel_{};
+    Fl_Box* configurationSummary_{};
     bool isRunning_{true};
-    std::chrono::steady_clock::time_point focusGraceUntil_{};
-
-    static void focusCheckCallback(void* data) {
-        static_cast<App*>(data)->hideIfFocusWasLost();
-    }
+    bool hasPositionedWindow_{};
 
     static void hideCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->hide();
@@ -272,64 +257,62 @@ private:
         static_cast<App*>(data)->openDataDirectory();
     }
 
-    static void reloadConfigCallback(Fl_Widget*, void* data) {
-        static_cast<App*>(data)->reloadConfig();
-    }
-
     void buildUi() {
         Fl::scheme("gtk+");
         Fl::background(17, 23, 32);
         Fl::foreground(235, 240, 247);
 
-        window_ = std::make_unique<MainWindow>(*this);
-        window_->label("BackItUpTool");
-        window_->border(0);
+        window_ = std::make_unique<Fl_Double_Window>(kWindowWidth, kWindowHeight, "BackItUpTool");
+        window_->size_range(760, 520);
         window_->color(kBackground);
         window_->callback(hideCallback, this);
         window_->begin();
 
-        auto* header = new Fl_Box(0, 0, kWindowWidth, kHeaderHeight);
+        auto* header = new Fl_Box(0, 0, kWindowWidth, kTopBarHeight);
         header->box(FL_FLAT_BOX);
         header->color(kHeader);
-        addLabel(20, 0, 350, kHeaderHeight, "BackItUpTool", 16, kText, FL_HELVETICA_BOLD);
+        addLabel(20, 0, 300, kTopBarHeight, "BackItUpTool", 18, kText, FL_HELVETICA_BOLD);
+        configurationSummary_ = addLabel(430, 0, 450, kTopBarHeight, "", 11, kMuted);
+        configurationSummary_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
-        auto* hideButton = new Fl_Button(390, 10, 34, 34, "_");
-        styleButton(*hideButton, kPanelRaised);
-        hideButton->callback(hideCallback, this);
+        auto* sidebar = new Fl_Box(0, kTopBarHeight, kSidebarWidth, kWindowHeight - kTopBarHeight);
+        sidebar->box(FL_FLAT_BOX);
+        sidebar->color(kHeader);
 
-        auto* panel = new Fl_Box(14, 68, 412, 220);
-        panel->box(FL_FLAT_BOX);
-        panel->color(kPanel);
+        constexpr const char* navigationLabels[] = {
+            "Overview", "Sources", "Projects", "Destinations", "Activity", "Settings"};
+        for (std::size_t index = 0; index < std::size(navigationLabels); ++index) {
+            const int buttonY = kTopBarHeight + 16 + static_cast<int>(index) * 44;
+            auto* button = new Fl_Button(12, buttonY, kSidebarWidth - 24, 34, navigationLabels[index]);
+            styleButton(*button, index == 1 ? kAccent : kPanelRaised);
+            button->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
+            if (index != 1) {
+                button->deactivate();
+            }
+        }
 
-        addLabel(28, 80, 380, 18, "CONFIGURATION", 10, kMuted, FL_HELVETICA_BOLD);
-        addLabel(28, 108, 180, 24, "Manual Sources", 12, kText);
-        manualSourceCount_ = addLabel(330, 108, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
-        manualSourceCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
-
-        addLabel(28, 142, 180, 24, "Projects Roots", 12, kText);
-        projectsRootCount_ = addLabel(330, 142, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
-        projectsRootCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
-
-        addLabel(28, 176, 180, 24, "Destinations", 12, kText);
-        destinationCount_ = addLabel(330, 176, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
-        destinationCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
-
-        addLabel(28, 210, 180, 24, "Backup Routes", 12, kText);
-        routeCount_ = addLabel(330, 210, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
-        routeCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
-
-        configPath_ = addLabel(28, 246, 378, 34, "", 10, kMuted);
-
-        auto* openFolderButton = new Fl_Button(14, 300, 200, 42, "Open data folder");
+        auto* openFolderButton =
+            new Fl_Button(12, kWindowHeight - kFooterHeight - 52, kSidebarWidth - 24, 34, "Open data folder");
         styleButton(*openFolderButton, kPanelRaised);
         openFolderButton->callback(openDataDirectoryCallback, this);
 
-        auto* reloadButton = new Fl_Button(226, 300, 200, 42, "Reload config.json");
-        styleButton(*reloadButton, kPanelRaised);
-        reloadButton->callback(reloadConfigCallback, this);
+        const int panelX = kSidebarWidth + 12;
+        const int panelY = kTopBarHeight + 12;
+        const int panelWidth = kWindowWidth - panelX - 12;
+        const int panelHeight = kWindowHeight - panelY - kFooterHeight - 12;
+        sourcesPanel_ = new SourcesPanel(
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { updateConfigurationSummary(); });
+
+        auto* footer = new Fl_Box(kSidebarWidth, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth,
+                                  kFooterHeight);
+        footer->box(FL_FLAT_BOX);
+        footer->color(kHeader);
+        addLabel(kSidebarWidth + 16, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth - 32,
+                 kFooterHeight, "Backup engine is not active yet. Configuration changes are saved.", 10, kMuted);
 
         window_->end();
-        updateConfigurationLabels();
+        window_->resizable(sourcesPanel_);
+        updateConfigurationSummary();
     }
 
     void centerWindow() {
@@ -344,18 +327,6 @@ private:
         window_->position(x, y);
     }
 
-    void hideIfFocusWasLost() {
-        if (!hasVisibleWindow() || std::chrono::steady_clock::now() < focusGraceUntil_) {
-            return;
-        }
-
-        const HWND nativeWindow = fl_xid(window_.get());
-        const HWND foregroundWindow = GetForegroundWindow();
-        if (foregroundWindow != nativeWindow && !IsChild(nativeWindow, foregroundWindow)) {
-            hide();
-        }
-    }
-
     void openDataDirectory() {
         const auto result = reinterpret_cast<std::intptr_t>(
             ShellExecuteW(nullptr, L"open", dataDirectory_.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
@@ -364,27 +335,11 @@ private:
         }
     }
 
-    void reloadConfig() {
-        try {
-            config_ = configStore_.load();
-            updateConfigurationLabels();
-            spdlog::info("Configuration reloaded");
-        } catch (const std::exception& error) {
-            reportError(error);
-        }
-    }
-
-    void updateConfigurationLabels() {
-        const std::string manualSourceCount = std::to_string(config_.manualSources.size());
-        const std::string projectsRootCount = std::to_string(config_.projectsRoots.size());
-        const std::string destinationCount = std::to_string(config_.destinations.size());
-        const std::string routeCount = std::to_string(config_.routes.size());
-        manualSourceCount_->copy_label(manualSourceCount.c_str());
-        projectsRootCount_->copy_label(projectsRootCount.c_str());
-        destinationCount_->copy_label(destinationCount.c_str());
-        routeCount_->copy_label(routeCount.c_str());
-        const std::string configPath = configStore_.path().string();
-        configPath_->copy_label(configPath.c_str());
+    void updateConfigurationSummary() {
+        const std::string summary = std::to_string(config_.manualSources.size()) + " Manual Sources   " +
+                                    std::to_string(config_.projectsRoots.size()) + " Project Roots   " +
+                                    std::to_string(config_.destinations.size()) + " Destinations";
+        configurationSummary_->copy_label(summary.c_str());
         window_->redraw();
     }
 
@@ -393,31 +348,6 @@ private:
         fl_alert("%s", error.what());
     }
 };
-
-int MainWindow::handle(int event) {
-    if (event == FL_PUSH && Fl::event_button() == FL_LEFT_MOUSE && Fl::event_y() < kHeaderHeight &&
-        Fl::event_x() < 380) {
-        isDragging_ = true;
-        dragOffsetX_ = Fl::event_x_root() - x();
-        dragOffsetY_ = Fl::event_y_root() - y();
-        return 1;
-    }
-    if (event == FL_DRAG && isDragging_) {
-        position(Fl::event_x_root() - dragOffsetX_, Fl::event_y_root() - dragOffsetY_);
-        return 1;
-    }
-    if (event == FL_RELEASE) {
-        isDragging_ = false;
-    }
-    if (event == FL_UNFOCUS) {
-        app_.requestFocusCheck();
-    }
-    if (event == FL_KEYDOWN && Fl::event_key() == FL_Escape) {
-        app_.hide();
-        return 1;
-    }
-    return Fl_Double_Window::handle(event);
-}
 
 bool TrayIcon::create() {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -577,6 +507,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             return 0;
         }
 
+        ComApartment comApartment;
         App app;
         while (app.isRunning()) {
             if (app.hasVisibleWindow()) {

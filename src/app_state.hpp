@@ -3,7 +3,7 @@
 #include <string>
 
 struct AppState {
-    std::string displayName{"System Tray App"};
+    std::string displayName{"Windows Backup Tool"};
     int sampleCount{0};
 
     bool operator==(const AppState&) const = default;

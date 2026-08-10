@@ -29,10 +29,10 @@
 
 namespace {
 
-constexpr wchar_t kAppName[] = L"System Tray App Template";
-constexpr wchar_t kAppId[] = L"FltkSystemTrayAppTemplate";
-constexpr wchar_t kTrayWindowClass[] = L"FltkSystemTrayAppTemplate.TrayWindow";
-constexpr wchar_t kSingleInstanceName[] = L"Local\\FltkSystemTrayAppTemplate.SingleInstance";
+constexpr wchar_t kAppName[] = L"Windows Backup Tool";
+constexpr wchar_t kAppId[] = L"WindowsBackupTool";
+constexpr wchar_t kTrayWindowClass[] = L"WindowsBackupTool.TrayWindow";
+constexpr wchar_t kSingleInstanceName[] = L"Local\\WindowsBackupTool.SingleInstance";
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kShowApplicationMessage = WM_APP + 2;
 constexpr UINT kTrayOpenCommand = 1;
@@ -286,7 +286,7 @@ private:
         Fl::foreground(235, 240, 247);
 
         window_ = std::make_unique<MainWindow>(*this);
-        window_->label("System Tray App Template");
+        window_->label("Windows Backup Tool");
         window_->border(0);
         window_->color(kBackground);
         window_->callback(hideCallback, this);
@@ -295,7 +295,7 @@ private:
         auto* header = new Fl_Box(0, 0, kWindowWidth, kHeaderHeight);
         header->box(FL_FLAT_BOX);
         header->color(kHeader);
-        addLabel(20, 0, 350, kHeaderHeight, "System Tray App", 16, kText, FL_HELVETICA_BOLD);
+        addLabel(20, 0, 350, kHeaderHeight, "Windows Backup Tool", 16, kText, FL_HELVETICA_BOLD);
 
         auto* hideButton = new Fl_Button(390, 10, 34, 34, "_");
         styleButton(*hideButton, kPanelRaised);
@@ -374,7 +374,7 @@ private:
                                       value.back() == '\n')) {
                 value.pop_back();
             }
-            state_.displayName = value.empty() ? "System Tray App" : value;
+            state_.displayName = value.empty() ? "Windows Backup Tool" : value;
             displayNameInput_->value(state_.displayName.c_str());
             persistState();
             updateStateLabels();
@@ -549,7 +549,7 @@ LRESULT TrayIcon::handleMessage(HWND window, UINT message, WPARAM wordParameter,
         }
         if (longParameter == WM_RBUTTONUP || longParameter == WM_CONTEXTMENU) {
             const HMENU menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING, kTrayOpenCommand, L"Open System Tray App");
+            AppendMenuW(menu, MF_STRING, kTrayOpenCommand, L"Open Windows Backup Tool");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
 
@@ -610,7 +610,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
         return 0;
     } catch (const std::exception& error) {
-        MessageBoxA(nullptr, error.what(), "System Tray App Template", MB_OK | MB_ICONERROR);
+        MessageBoxA(nullptr, error.what(), "Windows Backup Tool", MB_OK | MB_ICONERROR);
         return 1;
     }
 }

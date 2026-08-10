@@ -13,7 +13,7 @@ TEST_CASE("application state round-trips through JSON") {
 TEST_CASE("missing JSON fields use starter defaults") {
     const AppState state = deserializeAppState("{}");
 
-    REQUIRE(state.displayName == "System Tray App");
+    REQUIRE(state.displayName == "Windows Backup Tool");
     REQUIRE(state.sampleCount == 0);
 }
 

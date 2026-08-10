@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(FltkSystemTrayAppTemplate VERSION 1.0.0 LANGUAGES C CXX)
+project(WindowsBackupTool VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,23 +36,23 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(fltk)
 
-add_library(system_tray_app_core STATIC
+add_library(windows_backup_tool_core STATIC
     src/app_state.cpp
     src/database.cpp
 )
-target_include_directories(system_tray_app_core PUBLIC src)
-target_link_libraries(system_tray_app_core PUBLIC
+target_include_directories(windows_backup_tool_core PUBLIC src)
+target_link_libraries(windows_backup_tool_core PUBLIC
     unofficial::sqlite3::sqlite3
     nlohmann_json::nlohmann_json
 )
 
-add_executable(SystemTrayAppTemplate WIN32
+add_executable(WindowsBackupTool WIN32
     src/main.cpp
     src/app.rc
 )
-target_link_libraries(SystemTrayAppTemplate PRIVATE
+target_link_libraries(WindowsBackupTool PRIVATE
     fltk::fltk
-    system_tray_app_core
+    windows_backup_tool_core
     spdlog::spdlog
     comctl32
     shell32
@@ -62,13 +62,13 @@ target_link_libraries(SystemTrayAppTemplate PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(system_tray_app_core PRIVATE /W4 /permissive- /utf-8)
-    target_compile_options(SystemTrayAppTemplate PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(windows_backup_tool_core PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(WindowsBackupTool PRIVATE /W4 /permissive- /utf-8)
 endif()
 
-set_target_properties(SystemTrayAppTemplate PROPERTIES
-    OUTPUT_NAME "SystemTrayAppTemplate"
-    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:SystemTrayAppTemplate>"
+set_target_properties(WindowsBackupTool PROPERTIES
+    OUTPUT_NAME "WindowsBackupTool"
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:WindowsBackupTool>"
 )
 
 if(BUILD_TESTING)

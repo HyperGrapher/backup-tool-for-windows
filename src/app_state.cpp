@@ -12,7 +12,7 @@ std::string serializeAppState(const AppState& state) {
 AppState deserializeAppState(const std::string& jsonText) {
     const auto json = nlohmann::json::parse(jsonText);
     AppState state;
-    state.displayName = json.value("displayName", std::string{"System Tray App"});
+    state.displayName = json.value("displayName", std::string{"Windows Backup Tool"});
     state.sampleCount = json.value("sampleCount", 0);
     return state;
 }

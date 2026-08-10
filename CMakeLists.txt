@@ -60,6 +60,7 @@ target_link_libraries(BackItUpTool PRIVATE
     back_it_up_tool_core
     spdlog::spdlog
     comctl32
+    dwmapi
     shell32
     user32
     gdi32

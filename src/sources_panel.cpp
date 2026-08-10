@@ -19,16 +19,10 @@
 
 #include "config_store.hpp"
 #include "native_file_dialog.hpp"
+#include "ui_theme.hpp"
 
 namespace {
 
-const Fl_Color kPanel = fl_rgb_color(27, 36, 48);
-const Fl_Color kPanelRaised = fl_rgb_color(42, 55, 72);
-const Fl_Color kText = fl_rgb_color(235, 240, 247);
-const Fl_Color kMuted = fl_rgb_color(149, 164, 182);
-const Fl_Color kAccent = fl_rgb_color(55, 183, 158);
-const Fl_Color kInputBackground = fl_rgb_color(247, 249, 252);
-const Fl_Color kInputText = fl_rgb_color(24, 31, 42);
 constexpr int kSourceColumnWidths[] = {86, 430, 105, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
@@ -60,11 +54,12 @@ constexpr int kSourceColumnWidths[] = {86, 430, 105, 0};
     return key;
 }
 
-void styleButton(Fl_Button& button) {
-    button.box(FL_THIN_UP_BOX);
-    button.color(kPanelRaised);
-    button.selection_color(kAccent);
-    button.labelcolor(kText);
+void styleButton(Fl_Button& button, bool isPrimary = false) {
+    button.box(FL_BORDER_BOX);
+    button.down_box(FL_BORDER_BOX);
+    button.color(isPrimary ? UiTheme::kPrimary : UiTheme::kCard);
+    button.selection_color(UiTheme::kSelection);
+    button.labelcolor(isPrimary ? UiTheme::kPrimaryText : UiTheme::kText);
     button.labelsize(12);
 }
 
@@ -86,20 +81,22 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
       configChangedCallback_(std::move(configChangedCallback)) {
     box(FL_FLAT_BOX);
-    color(kPanel);
+    color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 20, y + 14, 200, 32, "Manual Sources", 22, kText, FL_HELVETICA_BOLD);
-    addLabel(x + width - 300, y + 16, 52, 28, "Search", 11, kMuted);
+    addLabel(x + 20, y + 14, 200, 32, "Manual Sources", 22, UiTheme::kText, FL_HELVETICA_BOLD);
+    addLabel(x + width - 300, y + 16, 52, 28, "Search", 11, UiTheme::kMutedText);
     searchInput_ = new Fl_Input(x + width - 245, y + 16, 225, 28);
-    searchInput_->color(kInputBackground);
-    searchInput_->textcolor(kInputText);
-    searchInput_->selection_color(kAccent);
+    searchInput_->box(FL_BORDER_BOX);
+    searchInput_->color(UiTheme::kCard);
+    searchInput_->textcolor(UiTheme::kText);
+    searchInput_->cursor_color(UiTheme::kText);
+    searchInput_->selection_color(UiTheme::kSelection);
     searchInput_->when(FL_WHEN_CHANGED);
     searchInput_->callback(searchCallback, this);
 
     auto* addFilesButton = new Fl_Button(x + 20, y + 60, 120, 34, "Add files");
-    styleButton(*addFilesButton);
+    styleButton(*addFilesButton, true);
     addFilesButton->callback(addFilesCallback, this);
 
     auto* addFoldersButton = new Fl_Button(x + 150, y + 60, 120, 34, "Add folders");
@@ -111,14 +108,15 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
     removeButton_->callback(removeCallback, this);
     removeButton_->deactivate();
 
-    addLabel(x + 24, y + 105, 78, 24, "Type", 11, kMuted, FL_HELVETICA_BOLD);
-    addLabel(x + 110, y + 105, 420, 24, "Path", 11, kMuted, FL_HELVETICA_BOLD);
-    addLabel(x + 540, y + 105, 110, 24, "Destinations", 11, kMuted, FL_HELVETICA_BOLD);
+    addLabel(x + 24, y + 105, 78, 24, "Type", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
+    addLabel(x + 110, y + 105, 420, 24, "Path", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
+    addLabel(x + 540, y + 105, 110, 24, "Destinations", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
 
     sourceBrowser_ = new Fl_Multi_Browser(x + 20, y + 130, width - 40, height - 180);
-    sourceBrowser_->color(fl_rgb_color(22, 30, 41));
-    sourceBrowser_->textcolor(kText);
-    sourceBrowser_->selection_color(fl_rgb_color(45, 102, 99));
+    sourceBrowser_->box(FL_BORDER_BOX);
+    sourceBrowser_->color(UiTheme::kCard);
+    sourceBrowser_->textcolor(UiTheme::kText);
+    sourceBrowser_->selection_color(UiTheme::kSelection);
     sourceBrowser_->textsize(12);
     sourceBrowser_->column_widths(kSourceColumnWidths);
     sourceBrowser_->column_char('\t');
@@ -126,7 +124,7 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
     sourceBrowser_->callback(selectionCallback, this);
     sourceBrowser_->when(FL_WHEN_CHANGED);
 
-    resultSummary_ = addLabel(x + 20, y + height - 42, width - 40, 24, "", 11, kMuted);
+    resultSummary_ = addLabel(x + 20, y + height - 42, width - 40, 24, "", 11, UiTheme::kMutedText);
 
     end();
     resizable(sourceBrowser_);

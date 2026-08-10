@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commctrl.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
@@ -25,6 +26,7 @@
 #include "config_store.hpp"
 #include "sources_panel.hpp"
 #include "state_store.hpp"
+#include "ui_theme.hpp"
 
 namespace {
 
@@ -42,13 +44,6 @@ constexpr int kWindowHeight = 620;
 constexpr int kTopBarHeight = 64;
 constexpr int kSidebarWidth = 170;
 constexpr int kFooterHeight = 38;
-
-const Fl_Color kBackground = fl_rgb_color(17, 23, 32);
-const Fl_Color kHeader = fl_rgb_color(29, 39, 53);
-const Fl_Color kPanelRaised = fl_rgb_color(42, 55, 72);
-const Fl_Color kText = fl_rgb_color(235, 240, 247);
-const Fl_Color kMuted = fl_rgb_color(149, 164, 182);
-const Fl_Color kAccent = fl_rgb_color(55, 183, 158);
 
 class TrayIcon final {
 public:
@@ -172,11 +167,12 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     return label;
 }
 
-void styleButton(Fl_Button& button, Fl_Color color) {
-    button.box(FL_THIN_UP_BOX);
+void styleButton(Fl_Button& button, Fl_Color color, Fl_Color labelColor = UiTheme::kText) {
+    button.box(FL_BORDER_BOX);
+    button.down_box(FL_BORDER_BOX);
     button.color(color);
-    button.selection_color(kAccent);
-    button.labelcolor(kText);
+    button.selection_color(UiTheme::kSelection);
+    button.labelcolor(labelColor);
     button.labelsize(12);
 }
 
@@ -218,6 +214,9 @@ public:
         window_->show();
 
         const HWND nativeWindow = fl_xid(window_.get());
+        constexpr DWORD kDarkTitleBarAttribute = 20;
+        const BOOL useDarkTitleBar = TRUE;
+        DwmSetWindowAttribute(nativeWindow, kDarkTitleBarAttribute, &useDarkTitleBar, sizeof(useDarkTitleBar));
         ShowWindow(nativeWindow, SW_SHOWNORMAL);
         SetForegroundWindow(nativeWindow);
         BringWindowToTop(nativeWindow);
@@ -258,33 +257,34 @@ private:
     }
 
     void buildUi() {
-        Fl::scheme("gtk+");
-        Fl::background(17, 23, 32);
-        Fl::foreground(235, 240, 247);
+        Fl::scheme("none");
+        Fl::background(9, 9, 11);
+        Fl::foreground(250, 250, 250);
 
         window_ = std::make_unique<Fl_Double_Window>(kWindowWidth, kWindowHeight, "BackItUpTool");
         window_->size_range(760, 520);
-        window_->color(kBackground);
+        window_->color(UiTheme::kBackground);
         window_->callback(hideCallback, this);
         window_->begin();
 
         auto* header = new Fl_Box(0, 0, kWindowWidth, kTopBarHeight);
         header->box(FL_FLAT_BOX);
-        header->color(kHeader);
-        addLabel(20, 0, 300, kTopBarHeight, "BackItUpTool", 18, kText, FL_HELVETICA_BOLD);
-        configurationSummary_ = addLabel(430, 0, 450, kTopBarHeight, "", 11, kMuted);
+        header->color(UiTheme::kBackground);
+        addLabel(20, 0, 300, kTopBarHeight, "BackItUpTool", 18, UiTheme::kText, FL_HELVETICA_BOLD);
+        configurationSummary_ = addLabel(430, 0, 450, kTopBarHeight, "", 11, UiTheme::kMutedText);
         configurationSummary_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
         auto* sidebar = new Fl_Box(0, kTopBarHeight, kSidebarWidth, kWindowHeight - kTopBarHeight);
         sidebar->box(FL_FLAT_BOX);
-        sidebar->color(kHeader);
+        sidebar->color(UiTheme::kSidebar);
 
         constexpr const char* navigationLabels[] = {
             "Overview", "Sources", "Projects", "Destinations", "Activity", "Settings"};
         for (std::size_t index = 0; index < std::size(navigationLabels); ++index) {
             const int buttonY = kTopBarHeight + 16 + static_cast<int>(index) * 44;
             auto* button = new Fl_Button(12, buttonY, kSidebarWidth - 24, 34, navigationLabels[index]);
-            styleButton(*button, index == 1 ? kAccent : kPanelRaised);
+            styleButton(*button, index == 1 ? UiTheme::kCard : UiTheme::kSidebar,
+                        index == 1 ? UiTheme::kText : UiTheme::kMutedText);
             button->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
             if (index != 1) {
                 button->deactivate();
@@ -293,7 +293,7 @@ private:
 
         auto* openFolderButton =
             new Fl_Button(12, kWindowHeight - kFooterHeight - 52, kSidebarWidth - 24, 34, "Open data folder");
-        styleButton(*openFolderButton, kPanelRaised);
+        styleButton(*openFolderButton, UiTheme::kCard);
         openFolderButton->callback(openDataDirectoryCallback, this);
 
         const int panelX = kSidebarWidth + 12;
@@ -306,9 +306,10 @@ private:
         auto* footer = new Fl_Box(kSidebarWidth, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth,
                                   kFooterHeight);
         footer->box(FL_FLAT_BOX);
-        footer->color(kHeader);
+        footer->color(UiTheme::kSidebar);
         addLabel(kSidebarWidth + 16, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth - 32,
-                 kFooterHeight, "Backup engine is not active yet. Configuration changes are saved.", 10, kMuted);
+                 kFooterHeight, "Backup engine is not active yet. Configuration changes are saved.", 10,
+                 UiTheme::kMutedText);
 
         window_->end();
         window_->resizable(sourcesPanel_);

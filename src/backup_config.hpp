@@ -63,6 +63,8 @@ struct BackupRoute {
 struct BackupSettings {
     int debounceSeconds{8};
     int projectsRescanMinutes{5};
+    std::uint64_t largeFileThresholdBytes{50ULL * 1024ULL * 1024ULL};
+    std::uint64_t projectSizeThresholdBytes{150ULL * 1024ULL * 1024ULL};
 
     bool operator==(const BackupSettings&) const = default;
 };
@@ -78,8 +80,8 @@ struct BackupConfig {
     bool operator==(const BackupConfig&) const = default;
 };
 
+[[nodiscard]] std::string generateUuid();
 [[nodiscard]] std::string generateStableId(std::string_view prefix);
 void validateBackupConfig(const BackupConfig& config);
 [[nodiscard]] std::string serializeBackupConfig(const BackupConfig& config);
 [[nodiscard]] BackupConfig deserializeBackupConfig(std::string_view jsonText);
-

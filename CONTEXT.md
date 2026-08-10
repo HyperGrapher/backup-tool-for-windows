@@ -37,8 +37,12 @@ A file or folder within a Source that remains after all source-type rules and ex
 _Avoid_: Included file, watched file
 
 **Projects Source**:
-A Source whose root contains the opt-in marker and whose eligible state excludes Git repository trees.
+A discovered immediate child of a Projects Root whose opt-in marker carries its stable identity and whose eligible state excludes generated and version-controlled trees.
 _Avoid_: Projects folder, code backup
+
+**Size Approval**:
+A user decision required before copying a Projects Source whose eligible content exceeds a safety threshold, either for one file or for the project as a whole.
+_Avoid_: Large-file warning, size notification
 
 **Reconciliation**:
 A comparison that determines and applies the work needed to make a Backup Route's Mirror match its Source.

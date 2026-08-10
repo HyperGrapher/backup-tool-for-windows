@@ -50,6 +50,8 @@ TEST_CASE("backup configuration uses operational defaults when optional JSON fie
     REQUIRE(config.schemaVersion == 1);
     REQUIRE(config.settings.debounceSeconds == 8);
     REQUIRE(config.settings.projectsRescanMinutes == 5);
+    REQUIRE(config.settings.largeFileThresholdBytes == 50ULL * 1024ULL * 1024ULL);
+    REQUIRE(config.settings.projectSizeThresholdBytes == 150ULL * 1024ULL * 1024ULL);
     REQUIRE(config.manualSources.empty());
     REQUIRE(config.projectsRoots.empty());
 }
@@ -76,3 +78,13 @@ TEST_CASE("generated stable IDs retain the requested domain prefix") {
     REQUIRE(first != second);
 }
 
+TEST_CASE("generated UUIDs use the canonical textual shape") {
+    const std::string id = generateUuid();
+
+    REQUIRE(id.size() == 36);
+    REQUIRE(id[8] == '-');
+    REQUIRE(id[13] == '-');
+    REQUIRE(id[18] == '-');
+    REQUIRE(id[23] == '-');
+    REQUIRE(id[14] == '4');
+}

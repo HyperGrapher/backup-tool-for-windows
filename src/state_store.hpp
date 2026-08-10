@@ -59,6 +59,10 @@ public:
                         std::optional<std::string_view> destinationId = std::nullopt);
     [[nodiscard]] std::vector<ActivityRecord> recentActivity(std::size_t limit) const;
 
+    [[nodiscard]] bool hasPermanentSizeApproval(std::string_view projectId) const;
+    void setPermanentSizeApproval(std::string_view projectId, std::string_view approvedUtc);
+    void clearPermanentSizeApproval(std::string_view projectId);
+
 private:
     struct SQLiteCloser {
         void operator()(sqlite3* database) const noexcept;
@@ -70,4 +74,3 @@ private:
 
     DatabaseHandle database_;
 };
-

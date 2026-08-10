@@ -155,6 +155,11 @@ StateStore::StateStore(const std::filesystem::path& path) {
         "message TEXT NOT NULL"
         ");");
     execute("CREATE INDEX IF NOT EXISTS activity_history_recent ON activity_history(id DESC);");
+    execute(
+        "CREATE TABLE IF NOT EXISTS project_size_approval ("
+        "project_id TEXT PRIMARY KEY,"
+        "approved_utc TEXT NOT NULL"
+        ");");
 }
 
 std::optional<RouteRuntimeState> StateStore::routeState(std::string_view sourceId,
@@ -260,6 +265,43 @@ std::vector<ActivityRecord> StateStore::recentActivity(std::size_t limit) const 
             optionalColumnText(statement.get(), 4),
             requiredColumnText(statement.get(), 5),
         });
+    }
+}
+
+bool StateStore::hasPermanentSizeApproval(std::string_view projectId) const {
+    requireIdentifier(projectId, "Project ID");
+    auto statement = prepare(database_.get(), "SELECT 1 FROM project_size_approval WHERE project_id = ?1;");
+    bindText(database_.get(), statement.get(), 1, projectId);
+    const int result = sqlite3_step(statement.get());
+    if (result == SQLITE_ROW) {
+        return true;
+    }
+    if (result == SQLITE_DONE) {
+        return false;
+    }
+    throw std::runtime_error(sqlite3_errmsg(database_.get()));
+}
+
+void StateStore::setPermanentSizeApproval(std::string_view projectId, std::string_view approvedUtc) {
+    requireIdentifier(projectId, "Project ID");
+    requireIdentifier(approvedUtc, "Approval timestamp");
+    auto statement = prepare(
+        database_.get(),
+        "INSERT INTO project_size_approval(project_id, approved_utc) VALUES(?1, ?2) "
+        "ON CONFLICT(project_id) DO UPDATE SET approved_utc = excluded.approved_utc;");
+    bindText(database_.get(), statement.get(), 1, projectId);
+    bindText(database_.get(), statement.get(), 2, approvedUtc);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        throw std::runtime_error(sqlite3_errmsg(database_.get()));
+    }
+}
+
+void StateStore::clearPermanentSizeApproval(std::string_view projectId) {
+    requireIdentifier(projectId, "Project ID");
+    auto statement = prepare(database_.get(), "DELETE FROM project_size_approval WHERE project_id = ?1;");
+    bindText(database_.get(), statement.get(), 1, projectId);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        throw std::runtime_error(sqlite3_errmsg(database_.get()));
     }
 }
 

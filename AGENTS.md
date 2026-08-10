@@ -87,3 +87,9 @@ Bad:
 // Increment the retry count.
 ++retryCount;
 ```
+
+## Communication
+
+- Explain progress, decisions, problems, and results at a basic programming level.
+- Prefer plain language over technical jargon. When a technical term is necessary, briefly explain what it means.
+- Do not assume the user is familiar with architecture terminology, Windows API details, build-system internals, or advanced C++ concepts.

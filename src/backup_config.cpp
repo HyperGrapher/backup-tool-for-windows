@@ -116,6 +116,8 @@ using Json = nlohmann::json;
     return Json{
         {"debounceSeconds", settings.debounceSeconds},
         {"projectsRescanMinutes", settings.projectsRescanMinutes},
+        {"largeFileThresholdBytes", settings.largeFileThresholdBytes},
+        {"projectSizeThresholdBytes", settings.projectSizeThresholdBytes},
     };
 }
 
@@ -166,6 +168,8 @@ using Json = nlohmann::json;
     BackupSettings settings;
     settings.debounceSeconds = json.value("debounceSeconds", settings.debounceSeconds);
     settings.projectsRescanMinutes = json.value("projectsRescanMinutes", settings.projectsRescanMinutes);
+    settings.largeFileThresholdBytes = json.value("largeFileThresholdBytes", settings.largeFileThresholdBytes);
+    settings.projectSizeThresholdBytes = json.value("projectSizeThresholdBytes", settings.projectSizeThresholdBytes);
     return settings;
 }
 
@@ -185,7 +189,7 @@ void requireUniqueIds(const Collection& values, GetId getId, std::string_view de
 
 }  // namespace
 
-std::string generateStableId(std::string_view prefix) {
+std::string generateUuid() {
     std::array<std::uint8_t, 16> bytes{};
     std::random_device random;
     for (std::uint8_t& byte : bytes) {
@@ -195,7 +199,7 @@ std::string generateStableId(std::string_view prefix) {
     bytes[8] = static_cast<std::uint8_t>((bytes[8] & 0x3F) | 0x80);
 
     std::ostringstream result;
-    result << prefix << '-' << std::hex << std::setfill('0');
+    result << std::hex << std::setfill('0');
     for (std::size_t index = 0; index < bytes.size(); ++index) {
         result << std::setw(2) << static_cast<unsigned int>(bytes[index]);
         if (index == 3 || index == 5 || index == 7 || index == 9) {
@@ -205,12 +209,20 @@ std::string generateStableId(std::string_view prefix) {
     return result.str();
 }
 
+std::string generateStableId(std::string_view prefix) {
+    if (prefix.empty()) {
+        throw std::invalid_argument("Stable ID prefix cannot be empty.");
+    }
+    return std::string{prefix} + '-' + generateUuid();
+}
+
 void validateBackupConfig(const BackupConfig& config) {
     if (config.schemaVersion != 1) {
         throw std::invalid_argument("Unsupported backup configuration schema version.");
     }
-    if (config.settings.debounceSeconds <= 0 || config.settings.projectsRescanMinutes <= 0) {
-        throw std::invalid_argument("Backup timing settings must be positive.");
+    if (config.settings.debounceSeconds <= 0 || config.settings.projectsRescanMinutes <= 0 ||
+        config.settings.largeFileThresholdBytes == 0 || config.settings.projectSizeThresholdBytes == 0) {
+        throw std::invalid_argument("Backup setting values must be positive.");
     }
 
     requireUniqueIds(config.manualSources, [](const ManualSource& source) -> const std::string& { return source.id; },
@@ -317,4 +329,3 @@ BackupConfig deserializeBackupConfig(std::string_view jsonText) {
     validateBackupConfig(config);
     return config;
 }
-

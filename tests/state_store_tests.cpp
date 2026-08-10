@@ -68,3 +68,13 @@ TEST_CASE("recent activity is returned newest first and respects the limit") {
     REQUIRE(records.front().destinationId == "destination-one");
 }
 
+TEST_CASE("permanent project size approval can be granted and revoked") {
+    TemporaryDirectory directory;
+    StateStore store{directory.path() / "state.db"};
+
+    REQUIRE_FALSE(store.hasPermanentSizeApproval("project-one"));
+    store.setPermanentSizeApproval("project-one", "2026-08-10T16:00:00Z");
+    REQUIRE(store.hasPermanentSizeApproval("project-one"));
+    store.clearPermanentSizeApproval("project-one");
+    REQUIRE_FALSE(store.hasPermanentSizeApproval("project-one"));
+}

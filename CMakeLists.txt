@@ -39,6 +39,8 @@ FetchContent_MakeAvailable(fltk)
 add_library(back_it_up_tool_core STATIC
     src/backup_config.cpp
     src/config_store.cpp
+    src/ignore_rules.cpp
+    src/projects_scanner.cpp
     src/state_store.cpp
 )
 target_include_directories(back_it_up_tool_core PUBLIC src)

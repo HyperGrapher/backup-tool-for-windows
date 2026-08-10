@@ -4,11 +4,10 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
-#include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -18,21 +17,20 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Double_Window.H>
-#include <FL/Fl_Input.H>
 #include <FL/fl_ask.H>
 #include <FL/platform.H>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/spdlog.h>
 
-#include "app_state.hpp"
-#include "database.hpp"
+#include "config_store.hpp"
+#include "state_store.hpp"
 
 namespace {
 
-constexpr wchar_t kAppName[] = L"Windows Backup Tool";
-constexpr wchar_t kAppId[] = L"WindowsBackupTool";
-constexpr wchar_t kTrayWindowClass[] = L"WindowsBackupTool.TrayWindow";
-constexpr wchar_t kSingleInstanceName[] = L"Local\\WindowsBackupTool.SingleInstance";
+constexpr wchar_t kAppName[] = L"BackItUpTool";
+constexpr wchar_t kAppId[] = L"BackItUpTool";
+constexpr wchar_t kTrayWindowClass[] = L"BackItUpTool.TrayWindow";
+constexpr wchar_t kSingleInstanceName[] = L"Local\\BackItUpTool.SingleInstance";
 constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kShowApplicationMessage = WM_APP + 2;
 constexpr UINT kTrayOpenCommand = 1;
@@ -50,8 +48,6 @@ const Fl_Color kPanelRaised = fl_rgb_color(42, 55, 72);
 const Fl_Color kText = fl_rgb_color(235, 240, 247);
 const Fl_Color kMuted = fl_rgb_color(149, 164, 182);
 const Fl_Color kAccent = fl_rgb_color(55, 183, 158);
-const Fl_Color kInputBackground = fl_rgb_color(247, 249, 252);
-const Fl_Color kInputText = fl_rgb_color(24, 31, 42);
 
 class App;
 
@@ -148,17 +144,13 @@ void configureLogging(const std::filesystem::path& dataDirectory) {
     spdlog::flush_on(spdlog::level::info);
 }
 
-[[nodiscard]] AppState loadState(Database& database) {
-    const auto value = database.setting("app_state");
-    if (!value.has_value()) {
-        return {};
+[[nodiscard]] BackupConfig loadOrCreateConfig(const ConfigStore& store) {
+    const bool doesConfigExist = std::filesystem::exists(store.path());
+    BackupConfig config = store.load();
+    if (!doesConfigExist) {
+        store.save(config);
     }
-
-    try {
-        return deserializeAppState(*value);
-    } catch (const std::exception&) {
-        return {};
-    }
+    return config;
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
@@ -183,7 +175,8 @@ void styleButton(Fl_Button& button, Fl_Color color) {
 class App final {
 public:
     App()
-        : dataDirectory_(applicationDataDirectory()), database_(dataDirectory_ / L"app.db"), state_(loadState(database_)),
+        : dataDirectory_(applicationDataDirectory()), configStore_(dataDirectory_ / L"config.json"),
+          stateStore_(dataDirectory_ / L"state.db"), config_(loadOrCreateConfig(configStore_)),
           tray_([this] { show(); }, [this] { requestExit(); }) {
         configureLogging(dataDirectory_);
         buildUi();
@@ -254,13 +247,16 @@ public:
 
 private:
     std::filesystem::path dataDirectory_;
-    Database database_;
-    AppState state_;
+    ConfigStore configStore_;
+    StateStore stateStore_;
+    BackupConfig config_;
     TrayIcon tray_;
     std::unique_ptr<MainWindow> window_;
-    Fl_Input* displayNameInput_{};
-    Fl_Box* countValue_{};
-    Fl_Box* stateSummary_{};
+    Fl_Box* manualSourceCount_{};
+    Fl_Box* projectsRootCount_{};
+    Fl_Box* destinationCount_{};
+    Fl_Box* routeCount_{};
+    Fl_Box* configPath_{};
     bool isRunning_{true};
     std::chrono::steady_clock::time_point focusGraceUntil_{};
 
@@ -272,12 +268,12 @@ private:
         static_cast<App*>(data)->hide();
     }
 
-    static void saveNameCallback(Fl_Widget*, void* data) {
-        static_cast<App*>(data)->saveDisplayName();
+    static void openDataDirectoryCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->openDataDirectory();
     }
 
-    static void incrementCallback(Fl_Widget*, void* data) {
-        static_cast<App*>(data)->incrementSampleCount();
+    static void reloadConfigCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->reloadConfig();
     }
 
     void buildUi() {
@@ -286,7 +282,7 @@ private:
         Fl::foreground(235, 240, 247);
 
         window_ = std::make_unique<MainWindow>(*this);
-        window_->label("Windows Backup Tool");
+        window_->label("BackItUpTool");
         window_->border(0);
         window_->color(kBackground);
         window_->callback(hideCallback, this);
@@ -295,7 +291,7 @@ private:
         auto* header = new Fl_Box(0, 0, kWindowWidth, kHeaderHeight);
         header->box(FL_FLAT_BOX);
         header->color(kHeader);
-        addLabel(20, 0, 350, kHeaderHeight, "Windows Backup Tool", 16, kText, FL_HELVETICA_BOLD);
+        addLabel(20, 0, 350, kHeaderHeight, "BackItUpTool", 16, kText, FL_HELVETICA_BOLD);
 
         auto* hideButton = new Fl_Button(390, 10, 34, 34, "_");
         styleButton(*hideButton, kPanelRaised);
@@ -305,39 +301,35 @@ private:
         panel->box(FL_FLAT_BOX);
         panel->color(kPanel);
 
-        addLabel(28, 80, 380, 18, "STARTER STATE", 10, kMuted, FL_HELVETICA_BOLD);
-        addLabel(28, 106, 95, 28, "Display name", 12, kText);
+        addLabel(28, 80, 380, 18, "CONFIGURATION", 10, kMuted, FL_HELVETICA_BOLD);
+        addLabel(28, 108, 180, 24, "Manual Sources", 12, kText);
+        manualSourceCount_ = addLabel(330, 108, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
+        manualSourceCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
-        displayNameInput_ = new Fl_Input(124, 106, 282, 28);
-        displayNameInput_->value(state_.displayName.c_str());
-        displayNameInput_->color(kInputBackground);
-        displayNameInput_->textcolor(kInputText);
-        displayNameInput_->cursor_color(kInputText);
-        displayNameInput_->selection_color(kAccent);
-        displayNameInput_->textsize(13);
+        addLabel(28, 142, 180, 24, "Projects Roots", 12, kText);
+        projectsRootCount_ = addLabel(330, 142, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
+        projectsRootCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
-        auto* saveButton = new Fl_Button(276, 144, 130, 30, "Save name");
-        styleButton(*saveButton, kPanelRaised);
-        saveButton->callback(saveNameCallback, this);
+        addLabel(28, 176, 180, 24, "Destinations", 12, kText);
+        destinationCount_ = addLabel(330, 176, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
+        destinationCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
-        addLabel(28, 188, 130, 26, "Sample counter", 12, kText);
-        countValue_ = addLabel(158, 188, 80, 26, "", 18, kAccent, FL_HELVETICA_BOLD);
+        addLabel(28, 210, 180, 24, "Backup Routes", 12, kText);
+        routeCount_ = addLabel(330, 210, 76, 24, "", 16, kAccent, FL_HELVETICA_BOLD);
+        routeCount_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
-        auto* incrementButton = new Fl_Button(276, 186, 130, 30, "Increment");
-        styleButton(*incrementButton, kPanelRaised);
-        incrementButton->callback(incrementCallback, this);
+        configPath_ = addLabel(28, 246, 378, 34, "", 10, kMuted);
 
-        stateSummary_ = addLabel(28, 232, 378, 42, "", 11, kMuted);
+        auto* openFolderButton = new Fl_Button(14, 300, 200, 42, "Open data folder");
+        styleButton(*openFolderButton, kPanelRaised);
+        openFolderButton->callback(openDataDirectoryCallback, this);
 
-        auto* hideToTrayButton = new Fl_Button(14, 300, 200, 42, "Hide to tray");
-        styleButton(*hideToTrayButton, kPanelRaised);
-        hideToTrayButton->callback(hideCallback, this);
-
-        auto* readyLabel = addLabel(230, 300, 196, 42, "SQLite + JSON ready", 11, kAccent, FL_HELVETICA_BOLD);
-        readyLabel->align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE);
+        auto* reloadButton = new Fl_Button(226, 300, 200, 42, "Reload config.json");
+        styleButton(*reloadButton, kPanelRaised);
+        reloadButton->callback(reloadConfigCallback, this);
 
         window_->end();
-        updateStateLabels();
+        updateConfigurationLabels();
     }
 
     void centerWindow() {
@@ -364,48 +356,35 @@ private:
         }
     }
 
-    void saveDisplayName() {
+    void openDataDirectory() {
+        const auto result = reinterpret_cast<std::intptr_t>(
+            ShellExecuteW(nullptr, L"open", dataDirectory_.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
+        if (result <= 32) {
+            reportError(std::runtime_error("Unable to open the BackItUpTool data folder."));
+        }
+    }
+
+    void reloadConfig() {
         try {
-            std::string value = displayNameInput_->value();
-            value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char character) {
-                return character != ' ' && character != '\t' && character != '\r' && character != '\n';
-            }));
-            while (!value.empty() && (value.back() == ' ' || value.back() == '\t' || value.back() == '\r' ||
-                                      value.back() == '\n')) {
-                value.pop_back();
-            }
-            state_.displayName = value.empty() ? "Windows Backup Tool" : value;
-            displayNameInput_->value(state_.displayName.c_str());
-            persistState();
-            updateStateLabels();
-            spdlog::info("Display name updated");
+            config_ = configStore_.load();
+            updateConfigurationLabels();
+            spdlog::info("Configuration reloaded");
         } catch (const std::exception& error) {
             reportError(error);
         }
     }
 
-    void incrementSampleCount() {
-        try {
-            if (state_.sampleCount < std::numeric_limits<int>::max()) {
-                ++state_.sampleCount;
-            }
-            persistState();
-            updateStateLabels();
-            spdlog::info("Sample counter changed to {}", state_.sampleCount);
-        } catch (const std::exception& error) {
-            reportError(error);
-        }
-    }
-
-    void persistState() {
-        database_.setSetting("app_state", serializeAppState(state_));
-    }
-
-    void updateStateLabels() {
-        const std::string count = std::to_string(state_.sampleCount);
-        countValue_->copy_label(count.c_str());
-        const std::string summary = "Persisted in " + (dataDirectory_ / L"app.db").string();
-        stateSummary_->copy_label(summary.c_str());
+    void updateConfigurationLabels() {
+        const std::string manualSourceCount = std::to_string(config_.manualSources.size());
+        const std::string projectsRootCount = std::to_string(config_.projectsRoots.size());
+        const std::string destinationCount = std::to_string(config_.destinations.size());
+        const std::string routeCount = std::to_string(config_.routes.size());
+        manualSourceCount_->copy_label(manualSourceCount.c_str());
+        projectsRootCount_->copy_label(projectsRootCount.c_str());
+        destinationCount_->copy_label(destinationCount.c_str());
+        routeCount_->copy_label(routeCount.c_str());
+        const std::string configPath = configStore_.path().string();
+        configPath_->copy_label(configPath.c_str());
         window_->redraw();
     }
 
@@ -549,7 +528,7 @@ LRESULT TrayIcon::handleMessage(HWND window, UINT message, WPARAM wordParameter,
         }
         if (longParameter == WM_RBUTTONUP || longParameter == WM_CONTEXTMENU) {
             const HMENU menu = CreatePopupMenu();
-            AppendMenuW(menu, MF_STRING, kTrayOpenCommand, L"Open Windows Backup Tool");
+            AppendMenuW(menu, MF_STRING, kTrayOpenCommand, L"Open BackItUpTool");
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             AppendMenuW(menu, MF_STRING, kTrayExitCommand, L"Exit");
 
@@ -610,7 +589,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
         return 0;
     } catch (const std::exception& error) {
-        MessageBoxA(nullptr, error.what(), "Windows Backup Tool", MB_OK | MB_ICONERROR);
+        MessageBoxA(nullptr, error.what(), "BackItUpTool", MB_OK | MB_ICONERROR);
         return 1;
     }
 }

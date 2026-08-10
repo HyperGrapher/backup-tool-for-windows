@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(WindowsBackupTool VERSION 1.0.0 LANGUAGES C CXX)
+project(BackItUpTool VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -36,23 +36,24 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(fltk)
 
-add_library(windows_backup_tool_core STATIC
-    src/app_state.cpp
-    src/database.cpp
+add_library(back_it_up_tool_core STATIC
+    src/backup_config.cpp
+    src/config_store.cpp
+    src/state_store.cpp
 )
-target_include_directories(windows_backup_tool_core PUBLIC src)
-target_link_libraries(windows_backup_tool_core PUBLIC
+target_include_directories(back_it_up_tool_core PUBLIC src)
+target_link_libraries(back_it_up_tool_core PUBLIC
     unofficial::sqlite3::sqlite3
     nlohmann_json::nlohmann_json
 )
 
-add_executable(WindowsBackupTool WIN32
+add_executable(BackItUpTool WIN32
     src/main.cpp
     src/app.rc
 )
-target_link_libraries(WindowsBackupTool PRIVATE
+target_link_libraries(BackItUpTool PRIVATE
     fltk::fltk
-    windows_backup_tool_core
+    back_it_up_tool_core
     spdlog::spdlog
     comctl32
     shell32
@@ -62,16 +63,15 @@ target_link_libraries(WindowsBackupTool PRIVATE
 )
 
 if(MSVC)
-    target_compile_options(windows_backup_tool_core PRIVATE /W4 /permissive- /utf-8)
-    target_compile_options(WindowsBackupTool PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(back_it_up_tool_core PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(BackItUpTool PRIVATE /W4 /permissive- /utf-8)
 endif()
 
-set_target_properties(WindowsBackupTool PROPERTIES
-    OUTPUT_NAME "WindowsBackupTool"
-    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:WindowsBackupTool>"
+set_target_properties(BackItUpTool PROPERTIES
+    OUTPUT_NAME "BackItUpTool"
+    VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:BackItUpTool>"
 )
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
-

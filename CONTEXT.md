@@ -1,12 +1,20 @@
-# Backup Tool
+# BackItUpTool
 
 This context describes the personal file-recovery concepts used by the Windows backup application.
 
 ## Language
 
 **Source**:
-A user-selected file or folder whose eligible state is authoritative for backup operations.
+A configured or discovered file or folder whose eligible state is authoritative for backup operations.
 _Avoid_: Watched item, backup folder
+
+**Manual Source**:
+A file or folder the user selects individually for protection, independent of any Projects Root.
+_Avoid_: Manual path, regular source
+
+**Projects Root**:
+A user-selected parent folder whose opted-in project children are discovered and watched by the application.
+_Avoid_: Projects parent, project folder
 
 **Destination**:
 A user-configured storage location that receives Mirrors, Snapshots, or both.

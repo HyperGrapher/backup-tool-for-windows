@@ -1,6 +1,6 @@
-# FLTK Windows Backup Tool
+# BackItUpTool
 
-A compact Windows starter for a tray-first, frameless FLTK application.
+A lightweight Windows tray application for configuring and running personal file backups.
 
 ## Included
 
@@ -8,9 +8,9 @@ A compact Windows starter for a tray-first, frameless FLTK application.
 - Tray icon with left-click Open and right-click Open/Exit actions.
 - Tray-only startup and hide-on-close behavior.
 - Low-CPU message loop that continues to dispatch tray events while the FLTK window is hidden.
-- SQLite settings database under `%LOCALAPPDATA%\WindowsBackupTool`.
-- JSON state serialization with nlohmann-json.
-- Rotating application log under `%LOCALAPPDATA%\WindowsBackupTool\logs` using spdlog.
+- Validated `config.json` under `%LOCALAPPDATA%\BackItUpTool`.
+- SQLite operational state and history under `%LOCALAPPDATA%\BackItUpTool`.
+- Rotating application log under `%LOCALAPPDATA%\BackItUpTool\logs` using spdlog.
 - Catch2 unit tests.
 - Static x64 MSVC build through a vcpkg manifest.
 
@@ -31,18 +31,8 @@ cmake --build --preset windows-release
 ctest --preset windows-release
 ```
 
-The executable is written to `build\Release\WindowsBackupTool.exe`.
+The executable is written to `build\Release\BackItUpTool.exe`.
 
 ## Run
 
 The application starts in the notification area. Left-click the tray icon to open the window. Right-click it for the Open and Exit menu.
-
-## Customize
-
-To rename this template for a new application, run the PowerShell script from the project root:
-
-```powershell
-.\Rename-Template.ps1 -AppName "My App"
-```
-
-The script updates the CMake targets, vcpkg package name, README, C++ application strings, and test target names. It skips `build`, `.git`, and the script itself. Use `-WhatIf` to preview the files that would change.

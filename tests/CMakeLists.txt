@@ -1,12 +1,12 @@
-add_executable(WindowsBackupToolTests
-    app_state_tests.cpp
-    database_tests.cpp
+add_executable(BackItUpToolTests
+    backup_config_tests.cpp
+    config_store_tests.cpp
+    state_store_tests.cpp
 )
-target_link_libraries(WindowsBackupToolTests PRIVATE
+target_link_libraries(BackItUpToolTests PRIVATE
     Catch2::Catch2WithMain
-    windows_backup_tool_core
+    back_it_up_tool_core
 )
 
 include(Catch)
-catch_discover_tests(WindowsBackupToolTests)
-
+catch_discover_tests(BackItUpToolTests)

@@ -39,6 +39,8 @@ FetchContent_MakeAvailable(fltk)
 add_library(back_it_up_tool_core STATIC
     src/backup_config.cpp
     src/config_store.cpp
+    src/connected_volume.cpp
+    src/destinations_panel.cpp
     src/ignore_rules.cpp
     src/native_file_dialog.cpp
     src/projects_scanner.cpp

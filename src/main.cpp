@@ -24,6 +24,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config_store.hpp"
+#include "destinations_panel.hpp"
 #include "sources_panel.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
@@ -244,6 +245,9 @@ private:
     TrayIcon tray_;
     std::unique_ptr<Fl_Double_Window> window_;
     SourcesPanel* sourcesPanel_{};
+    DestinationsPanel* destinationsPanel_{};
+    Fl_Button* sourcesNavigationButton_{};
+    Fl_Button* destinationsNavigationButton_{};
     Fl_Box* configurationSummary_{};
     bool isRunning_{true};
     bool hasPositionedWindow_{};
@@ -254,6 +258,14 @@ private:
 
     static void openDataDirectoryCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->openDataDirectory();
+    }
+
+    static void sourcesNavigationCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->showSourcesPage();
+    }
+
+    static void destinationsNavigationCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->showDestinationsPage();
     }
 
     void buildUi() {
@@ -285,8 +297,14 @@ private:
             auto* button = new Fl_Button(12, buttonY, kSidebarWidth - 24, 34, navigationLabels[index]);
             styleButton(*button, index == 1 ? UiTheme::kCard : UiTheme::kSidebar,
                         index == 1 ? UiTheme::kText : UiTheme::kMutedText);
-            button->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-            if (index != 1) {
+            button->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+            if (index == 1) {
+                sourcesNavigationButton_ = button;
+                button->callback(sourcesNavigationCallback, this);
+            } else if (index == 3) {
+                destinationsNavigationButton_ = button;
+                button->callback(destinationsNavigationCallback, this);
+            } else {
                 button->deactivate();
             }
         }
@@ -301,7 +319,10 @@ private:
         const int panelWidth = kWindowWidth - panelX - 12;
         const int panelHeight = kWindowHeight - panelY - kFooterHeight - 12;
         sourcesPanel_ = new SourcesPanel(
-            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { updateConfigurationSummary(); });
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
+        destinationsPanel_ = new DestinationsPanel(
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
+        destinationsPanel_->hide();
 
         auto* footer = new Fl_Box(kSidebarWidth, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth,
                                   kFooterHeight);
@@ -334,6 +355,28 @@ private:
         if (result <= 32) {
             reportError(std::runtime_error("Unable to open the BackItUpTool data folder."));
         }
+    }
+
+    void showSourcesPage() {
+        destinationsPanel_->hide();
+        sourcesPanel_->show();
+        styleButton(*sourcesNavigationButton_, UiTheme::kCard, UiTheme::kText);
+        styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        window_->redraw();
+    }
+
+    void showDestinationsPage() {
+        sourcesPanel_->hide();
+        destinationsPanel_->refresh();
+        destinationsPanel_->show();
+        styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        styleButton(*destinationsNavigationButton_, UiTheme::kCard, UiTheme::kText);
+        window_->redraw();
+    }
+
+    void handleConfigChanged() {
+        sourcesPanel_->refresh();
+        updateConfigurationSummary();
     }
 
     void updateConfigurationSummary() {

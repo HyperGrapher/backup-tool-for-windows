@@ -9,9 +9,12 @@
 #include <filesystem>
 #include <functional>
 #include <iterator>
+#include <mutex>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <FL/Fl.H>
@@ -24,6 +27,7 @@
 #include <spdlog/spdlog.h>
 
 #include "config_store.hpp"
+#include "backup_engine.hpp"
 #include "destinations_panel.hpp"
 #include "sources_panel.hpp"
 #include "state_store.hpp"
@@ -192,6 +196,9 @@ public:
     }
 
     ~App() {
+        if (backupThread_.joinable()) {
+            backupThread_.join();
+        }
         spdlog::info("Application stopped");
         spdlog::shutdown();
     }
@@ -249,6 +256,13 @@ private:
     Fl_Button* sourcesNavigationButton_{};
     Fl_Button* destinationsNavigationButton_{};
     Fl_Box* configurationSummary_{};
+    Fl_Box* footerStatus_{};
+    Fl_Button* runNowButton_{};
+    BackupEngine backupEngine_;
+    std::thread backupThread_;
+    std::mutex backupResultMutex_;
+    std::optional<BackupRunSummary> backupResult_;
+    bool isBackupRunning_{};
     bool isRunning_{true};
     bool hasPositionedWindow_{};
 
@@ -268,6 +282,14 @@ private:
         static_cast<App*>(data)->showDestinationsPage();
     }
 
+    static void runNowCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->startMirrorRun();
+    }
+
+    static void mirrorFinishedAwake(void* data) {
+        static_cast<App*>(data)->finishMirrorRun();
+    }
+
     void buildUi() {
         Fl::scheme("none");
         Fl::background(9, 9, 11);
@@ -283,7 +305,10 @@ private:
         header->box(FL_FLAT_BOX);
         header->color(UiTheme::kBackground);
         addLabel(20, 0, 300, kTopBarHeight, "BackItUpTool", 18, UiTheme::kText, FL_HELVETICA_BOLD);
-        configurationSummary_ = addLabel(430, 0, 450, kTopBarHeight, "", 11, UiTheme::kMutedText);
+        runNowButton_ = new Fl_Button(320, 15, 100, 34, "Run now");
+        styleButton(*runNowButton_, UiTheme::kPrimary, UiTheme::kPrimaryText);
+        runNowButton_->callback(runNowCallback, this);
+        configurationSummary_ = addLabel(440, 0, 440, kTopBarHeight, "", 11, UiTheme::kMutedText);
         configurationSummary_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
 
         auto* sidebar = new Fl_Box(0, kTopBarHeight, kSidebarWidth, kWindowHeight - kTopBarHeight);
@@ -328,9 +353,9 @@ private:
                                   kFooterHeight);
         footer->box(FL_FLAT_BOX);
         footer->color(UiTheme::kSidebar);
-        addLabel(kSidebarWidth + 16, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth - 32,
-                 kFooterHeight, "Backup engine is not active yet. Configuration changes are saved.", 10,
-                 UiTheme::kMutedText);
+        footerStatus_ = addLabel(kSidebarWidth + 16, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth - 32,
+                                  kFooterHeight, "Ready. Select Run now to mirror configured Sources.", 10,
+                                  UiTheme::kMutedText);
 
         window_->end();
         window_->resizable(sourcesPanel_);
@@ -377,6 +402,61 @@ private:
     void handleConfigChanged() {
         sourcesPanel_->refresh();
         updateConfigurationSummary();
+    }
+
+    void startMirrorRun() {
+        if (isBackupRunning_) {
+            return;
+        }
+        try {
+            const std::vector<MirrorPlan> plans = backupEngine_.previewMirrors(config_);
+            if (plans.empty()) {
+                footerStatus_->copy_label("No Mirror routes are configured.");
+                return;
+            }
+            if (backupThread_.joinable()) {
+                backupThread_.join();
+            }
+            isBackupRunning_ = true;
+            runNowButton_->deactivate();
+            const std::string status = "Mirroring " + std::to_string(plans.size()) + " configured Sources...";
+            footerStatus_->copy_label(status.c_str());
+            backupThread_ = std::thread([this] {
+                BackupRunSummary result;
+                try {
+                    result = backupEngine_.runMirrors(config_, stateStore_, dataDirectory_ / L"logs");
+                } catch (const std::exception& error) {
+                    result.failed = 1;
+                    result.messages.push_back(error.what());
+                }
+                {
+                    const std::scoped_lock lock(backupResultMutex_);
+                    backupResult_ = std::move(result);
+                }
+                Fl::awake(mirrorFinishedAwake, this);
+            });
+        } catch (const std::exception& error) {
+            footerStatus_->copy_label(error.what());
+            reportError(error);
+        }
+    }
+
+    void finishMirrorRun() {
+        if (backupThread_.joinable()) {
+            backupThread_.join();
+        }
+        BackupRunSummary result;
+        {
+            const std::scoped_lock lock(backupResultMutex_);
+            result = std::move(*backupResult_);
+            backupResult_.reset();
+        }
+        isBackupRunning_ = false;
+        runNowButton_->activate();
+        const std::string status = "Mirror finished: " + std::to_string(result.succeeded) + " succeeded, " +
+                                   std::to_string(result.failed) + " failed.";
+        footerStatus_->copy_label(status.c_str());
+        window_->redraw();
     }
 
     void updateConfigurationSummary() {

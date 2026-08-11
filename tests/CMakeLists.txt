@@ -1,5 +1,6 @@
 add_executable(BackItUpToolTests
     backup_config_tests.cpp
+    backup_engine_tests.cpp
     config_store_tests.cpp
     ignore_rules_tests.cpp
     projects_scanner_tests.cpp

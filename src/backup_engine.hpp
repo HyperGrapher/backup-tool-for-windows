@@ -26,6 +26,15 @@ struct BackupRunSummary {
 class BackupEngine final {
 public:
     [[nodiscard]] std::vector<MirrorPlan> previewMirrors(const BackupConfig& config) const;
+    [[nodiscard]] std::vector<MirrorPlan> previewPendingMirrors(const BackupConfig& config,
+                                                                const StateStore& stateStore) const;
     [[nodiscard]] BackupRunSummary runMirrors(const BackupConfig& config, StateStore& stateStore,
                                               const std::filesystem::path& logDirectory) const;
+    [[nodiscard]] BackupRunSummary runPendingMirrors(const BackupConfig& config, StateStore& stateStore,
+                                                     const std::filesystem::path& logDirectory) const;
+
+private:
+    [[nodiscard]] BackupRunSummary runPlans(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
+                                            StateStore& stateStore,
+                                            const std::filesystem::path& logDirectory) const;
 };

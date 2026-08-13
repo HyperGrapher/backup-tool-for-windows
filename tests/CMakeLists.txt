@@ -4,6 +4,7 @@ add_executable(BackItUpToolTests
     config_store_tests.cpp
     ignore_rules_tests.cpp
     projects_scanner_tests.cpp
+    source_watcher_tests.cpp
     state_store_tests.cpp
 )
 target_link_libraries(BackItUpToolTests PRIVATE

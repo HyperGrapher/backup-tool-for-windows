@@ -52,7 +52,13 @@ public:
 
     [[nodiscard]] std::optional<RouteRuntimeState> routeState(std::string_view sourceId,
                                                                std::string_view destinationId) const;
+    [[nodiscard]] std::vector<RouteRuntimeState> routeStates() const;
     void setRouteState(const RouteRuntimeState& state);
+    void markRouteDirty(std::string_view sourceId, std::string_view destinationId);
+    void beginRouteAttempt(std::string_view sourceId, std::string_view destinationId, std::string_view attemptUtc);
+    void completeRouteSuccess(std::string_view sourceId, std::string_view destinationId,
+                              std::string_view successUtc);
+    void completeRouteFailure(std::string_view sourceId, std::string_view destinationId, std::string_view error);
 
     void appendActivity(std::string_view occurredUtc, std::string_view severity, std::string_view message,
                         std::optional<std::string_view> sourceId = std::nullopt,

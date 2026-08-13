@@ -192,6 +192,32 @@ std::optional<RouteRuntimeState> StateStore::routeState(std::string_view sourceI
     };
 }
 
+std::vector<RouteRuntimeState> StateStore::routeStates() const {
+    auto statement = prepare(
+        database_.get(),
+        "SELECT source_id, destination_id, status, is_dirty, last_attempt_utc, last_success_utc, last_error "
+        "FROM route_state ORDER BY source_id, destination_id;");
+    std::vector<RouteRuntimeState> states;
+    while (true) {
+        const int result = sqlite3_step(statement.get());
+        if (result == SQLITE_DONE) {
+            return states;
+        }
+        if (result != SQLITE_ROW) {
+            throw std::runtime_error(sqlite3_errmsg(database_.get()));
+        }
+        states.push_back(RouteRuntimeState{
+            requiredColumnText(statement.get(), 0),
+            requiredColumnText(statement.get(), 1),
+            routeStatusFromString(requiredColumnText(statement.get(), 2)),
+            sqlite3_column_int(statement.get(), 3) != 0,
+            optionalColumnText(statement.get(), 4),
+            optionalColumnText(statement.get(), 5),
+            optionalColumnText(statement.get(), 6),
+        });
+    }
+}
+
 void StateStore::setRouteState(const RouteRuntimeState& state) {
     requireIdentifier(state.sourceId, "Source ID");
     requireIdentifier(state.destinationId, "Destination ID");
@@ -211,6 +237,74 @@ void StateStore::setRouteState(const RouteRuntimeState& state) {
     bindOptionalText(database_.get(), statement.get(), 5, state.lastAttemptUtc);
     bindOptionalText(database_.get(), statement.get(), 6, state.lastSuccessUtc);
     bindOptionalText(database_.get(), statement.get(), 7, state.lastError);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        throw std::runtime_error(sqlite3_errmsg(database_.get()));
+    }
+}
+
+void StateStore::markRouteDirty(std::string_view sourceId, std::string_view destinationId) {
+    requireIdentifier(sourceId, "Source ID");
+    requireIdentifier(destinationId, "Destination ID");
+    auto statement = prepare(
+        database_.get(),
+        "INSERT INTO route_state(source_id, destination_id, status, is_dirty) VALUES(?1, ?2, 'pending', 1) "
+        "ON CONFLICT(source_id, destination_id) DO UPDATE SET "
+        "status = CASE WHEN route_state.status = 'running' THEN 'running' ELSE 'pending' END, is_dirty = 1;");
+    bindText(database_.get(), statement.get(), 1, sourceId);
+    bindText(database_.get(), statement.get(), 2, destinationId);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        throw std::runtime_error(sqlite3_errmsg(database_.get()));
+    }
+}
+
+void StateStore::beginRouteAttempt(std::string_view sourceId, std::string_view destinationId,
+                                   std::string_view attemptUtc) {
+    requireIdentifier(sourceId, "Source ID");
+    requireIdentifier(destinationId, "Destination ID");
+    requireIdentifier(attemptUtc, "Attempt timestamp");
+    auto statement = prepare(
+        database_.get(),
+        "INSERT INTO route_state(source_id, destination_id, status, is_dirty, last_attempt_utc) "
+        "VALUES(?1, ?2, 'running', 0, ?3) "
+        "ON CONFLICT(source_id, destination_id) DO UPDATE SET "
+        "status = 'running', is_dirty = 0, last_attempt_utc = excluded.last_attempt_utc, last_error = NULL;");
+    bindText(database_.get(), statement.get(), 1, sourceId);
+    bindText(database_.get(), statement.get(), 2, destinationId);
+    bindText(database_.get(), statement.get(), 3, attemptUtc);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        throw std::runtime_error(sqlite3_errmsg(database_.get()));
+    }
+}
+
+void StateStore::completeRouteSuccess(std::string_view sourceId, std::string_view destinationId,
+                                      std::string_view successUtc) {
+    requireIdentifier(sourceId, "Source ID");
+    requireIdentifier(destinationId, "Destination ID");
+    requireIdentifier(successUtc, "Success timestamp");
+    auto statement = prepare(
+        database_.get(),
+        "UPDATE route_state SET status = CASE WHEN is_dirty = 1 THEN 'pending' ELSE 'synced' END, "
+        "last_success_utc = ?3, last_error = NULL WHERE source_id = ?1 AND destination_id = ?2;");
+    bindText(database_.get(), statement.get(), 1, sourceId);
+    bindText(database_.get(), statement.get(), 2, destinationId);
+    bindText(database_.get(), statement.get(), 3, successUtc);
+    if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+        throw std::runtime_error(sqlite3_errmsg(database_.get()));
+    }
+}
+
+void StateStore::completeRouteFailure(std::string_view sourceId, std::string_view destinationId,
+                                      std::string_view error) {
+    requireIdentifier(sourceId, "Source ID");
+    requireIdentifier(destinationId, "Destination ID");
+    requireIdentifier(error, "Mirror error");
+    auto statement = prepare(
+        database_.get(),
+        "UPDATE route_state SET status = 'error', is_dirty = 1, last_error = ?3 "
+        "WHERE source_id = ?1 AND destination_id = ?2;");
+    bindText(database_.get(), statement.get(), 1, sourceId);
+    bindText(database_.get(), statement.get(), 2, destinationId);
+    bindText(database_.get(), statement.get(), 3, error);
     if (sqlite3_step(statement.get()) != SQLITE_DONE) {
         throw std::runtime_error(sqlite3_errmsg(database_.get()));
     }

@@ -68,6 +68,36 @@ TEST_CASE("recent activity is returned newest first and respects the limit") {
     REQUIRE(records.front().destinationId == "destination-one");
 }
 
+TEST_CASE("a change during a running mirror remains pending after success") {
+    TemporaryDirectory directory;
+    StateStore store{directory.path() / "state.db"};
+
+    store.markRouteDirty("source-one", "destination-one");
+    store.beginRouteAttempt("source-one", "destination-one", "2026-08-13T10:00:00Z");
+    store.markRouteDirty("source-one", "destination-one");
+    store.completeRouteSuccess("source-one", "destination-one", "2026-08-13T10:01:00Z");
+
+    const auto state = store.routeState("source-one", "destination-one");
+    REQUIRE(state.has_value());
+    REQUIRE(state->status == RouteStatus::pending);
+    REQUIRE(state->isDirty);
+    REQUIRE(state->lastSuccessUtc == "2026-08-13T10:01:00Z");
+}
+
+TEST_CASE("a quiet successful mirror clears pending work") {
+    TemporaryDirectory directory;
+    StateStore store{directory.path() / "state.db"};
+
+    store.markRouteDirty("source-one", "destination-one");
+    store.beginRouteAttempt("source-one", "destination-one", "2026-08-13T10:00:00Z");
+    store.completeRouteSuccess("source-one", "destination-one", "2026-08-13T10:01:00Z");
+
+    const auto state = store.routeState("source-one", "destination-one");
+    REQUIRE(state.has_value());
+    REQUIRE(state->status == RouteStatus::synced);
+    REQUIRE_FALSE(state->isDirty);
+}
+
 TEST_CASE("permanent project size approval can be granted and revoked") {
     TemporaryDirectory directory;
     StateStore store{directory.path() / "state.db"};

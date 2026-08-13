@@ -142,15 +142,50 @@ std::vector<MirrorPlan> BackupEngine::previewMirrors(const BackupConfig& config)
     return plans;
 }
 
+std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& config,
+                                                            const StateStore& stateStore) const {
+    std::vector<MirrorPlan> pendingPlans;
+    for (const BackupRoute& route : config.routes) {
+        if (!route.isMirrorEnabled) {
+            continue;
+        }
+        const std::optional<RouteRuntimeState> state = stateStore.routeState(route.sourceId, route.destinationId);
+        if (!state.has_value() || !state->isDirty) {
+            continue;
+        }
+
+        BackupConfig singleRouteConfig = config;
+        singleRouteConfig.routes = {route};
+        try {
+            std::vector<MirrorPlan> routePlans = previewMirrors(singleRouteConfig);
+            pendingPlans.insert(pendingPlans.end(), routePlans.begin(), routePlans.end());
+        } catch (const std::exception&) {
+            // Pending work stays in SQLite until its Source and Destination are available again.
+        }
+    }
+    return pendingPlans;
+}
+
 BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, StateStore& stateStore,
                                           const std::filesystem::path& logDirectory) const {
     const std::vector<MirrorPlan> plans = previewMirrors(config);
+    return runPlans(config, plans, stateStore, logDirectory);
+}
+
+BackupRunSummary BackupEngine::runPendingMirrors(const BackupConfig& config, StateStore& stateStore,
+                                                 const std::filesystem::path& logDirectory) const {
+    const std::vector<MirrorPlan> plans = previewPendingMirrors(config, stateStore);
+    return runPlans(config, plans, stateStore, logDirectory);
+}
+
+BackupRunSummary BackupEngine::runPlans(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
+                                        StateStore& stateStore, const std::filesystem::path& logDirectory) const {
     std::filesystem::create_directories(logDirectory);
     BackupRunSummary summary;
     for (const MirrorPlan& plan : plans) {
         const ManualSource& source = findManualSource(config, plan.sourceId);
         const std::string attemptTime = utcNow();
-        stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::running, true, attemptTime, std::nullopt, std::nullopt});
+        stateStore.beginRouteAttempt(plan.sourceId, plan.destinationId, attemptTime);
         try {
             DWORD exitCode = 1;
             if (source.kind == ManualSourceKind::file) {
@@ -164,20 +199,20 @@ BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, StateStore
             }
             if (exitCode >= 8) {
                 const std::string message = "Mirror failed for " + pathToUtf8(source.path) + " (robocopy " + std::to_string(exitCode) + ").";
-                stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::error, true, attemptTime, std::nullopt, message});
+                stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
                 stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
                 summary.messages.push_back(message);
                 ++summary.failed;
                 continue;
             }
             const std::string message = "Mirror completed for " + pathToUtf8(source.path) + ".";
-            stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::synced, false, attemptTime, utcNow(), std::nullopt});
+            stateStore.completeRouteSuccess(plan.sourceId, plan.destinationId, utcNow());
             stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.succeeded;
         } catch (const std::exception& error) {
             const std::string message = "Mirror failed for " + pathToUtf8(source.path) + ": " + error.what();
-            stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::error, true, attemptTime, std::nullopt, message});
+            stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
             stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.failed;

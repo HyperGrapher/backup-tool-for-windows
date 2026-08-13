@@ -9,6 +9,8 @@ A lightweight Windows tray application for configuring and running personal file
 - Working Destinations page that detects connected removable drives, tracks them by volume serial number, shows availability and free space, and also accepts folder destinations.
 - Manual Sources can be connected to or disconnected from a selected Destination in bulk; new routes enable Mirror and Snapshots by default.
 - `Run now` performs configured Mirrors sequentially in the background. Mirrors preserve their original path under `<destination>\BackItUpTool\Mirrors`, such as `C\Users\name\Documents`, and reject any Source/Destination overlap.
+- Manual Sources are watched automatically. Changes are debounced, saved as pending work in SQLite, mirrored when the Destination is available, and remain queued across app restarts or removable-drive disconnections.
+- The Overview page shows Destination availability, pending Mirrors, the most recent successful Mirror, automatic-watching status, and recent failures.
 - Tray icon with left-click Open and right-click Open/Exit actions.
 - Tray-only startup and hide-on-close behavior.
 - Low-CPU message loop that continues to dispatch tray events while the FLTK window is hidden.

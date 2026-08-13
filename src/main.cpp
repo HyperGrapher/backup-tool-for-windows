@@ -5,6 +5,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -29,6 +30,8 @@
 #include "config_store.hpp"
 #include "backup_engine.hpp"
 #include "destinations_panel.hpp"
+#include "overview_panel.hpp"
+#include "source_watcher.hpp"
 #include "sources_panel.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
@@ -192,10 +195,15 @@ public:
         if (!tray_.create()) {
             throw std::runtime_error("Unable to create the notification-area icon.");
         }
+        initializeRouteStates();
+        restartSourceWatcher();
+        Fl::add_timeout(1.0, automaticWorkTimerCallback, this);
         spdlog::info("Application started in the notification area");
     }
 
     ~App() {
+        Fl::remove_timeout(automaticWorkTimerCallback, this);
+        sourceWatcher_.stop();
         if (backupThread_.joinable()) {
             backupThread_.join();
         }
@@ -245,6 +253,11 @@ public:
     }
 
 private:
+    struct SourceChangeNotification {
+        App* app{};
+        std::string sourceId;
+    };
+
     std::filesystem::path dataDirectory_;
     ConfigStore configStore_;
     StateStore stateStore_;
@@ -253,18 +266,22 @@ private:
     std::unique_ptr<Fl_Double_Window> window_;
     SourcesPanel* sourcesPanel_{};
     DestinationsPanel* destinationsPanel_{};
+    OverviewPanel* overviewPanel_{};
+    Fl_Button* overviewNavigationButton_{};
     Fl_Button* sourcesNavigationButton_{};
     Fl_Button* destinationsNavigationButton_{};
     Fl_Box* configurationSummary_{};
     Fl_Box* footerStatus_{};
     Fl_Button* runNowButton_{};
     BackupEngine backupEngine_;
+    SourceWatcher sourceWatcher_;
     std::thread backupThread_;
     std::mutex backupResultMutex_;
     std::optional<BackupRunSummary> backupResult_;
     bool isBackupRunning_{};
     bool isRunning_{true};
     bool hasPositionedWindow_{};
+    std::chrono::steady_clock::time_point nextAutomaticAttempt_{};
 
     static void hideCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->hide();
@@ -278,6 +295,10 @@ private:
         static_cast<App*>(data)->showSourcesPage();
     }
 
+    static void overviewNavigationCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->showOverviewPage();
+    }
+
     static void destinationsNavigationCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->showDestinationsPage();
     }
@@ -288,6 +309,17 @@ private:
 
     static void mirrorFinishedAwake(void* data) {
         static_cast<App*>(data)->finishMirrorRun();
+    }
+
+    static void sourceChangedAwake(void* data) {
+        std::unique_ptr<SourceChangeNotification> notification{static_cast<SourceChangeNotification*>(data)};
+        notification->app->markSourceDirty(notification->sourceId);
+    }
+
+    static void automaticWorkTimerCallback(void* data) {
+        auto* app = static_cast<App*>(data);
+        app->checkAutomaticWork();
+        Fl::repeat_timeout(1.0, automaticWorkTimerCallback, data);
     }
 
     void buildUi() {
@@ -320,10 +352,13 @@ private:
         for (std::size_t index = 0; index < std::size(navigationLabels); ++index) {
             const int buttonY = kTopBarHeight + 16 + static_cast<int>(index) * 44;
             auto* button = new Fl_Button(12, buttonY, kSidebarWidth - 24, 34, navigationLabels[index]);
-            styleButton(*button, index == 1 ? UiTheme::kCard : UiTheme::kSidebar,
-                        index == 1 ? UiTheme::kText : UiTheme::kMutedText);
+            styleButton(*button, index == 0 ? UiTheme::kCard : UiTheme::kSidebar,
+                        index == 0 ? UiTheme::kText : UiTheme::kMutedText);
             button->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
-            if (index == 1) {
+            if (index == 0) {
+                overviewNavigationButton_ = button;
+                button->callback(overviewNavigationCallback, this);
+            } else if (index == 1) {
                 sourcesNavigationButton_ = button;
                 button->callback(sourcesNavigationCallback, this);
             } else if (index == 3) {
@@ -347,6 +382,8 @@ private:
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
         destinationsPanel_ = new DestinationsPanel(
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
+        overviewPanel_ = new OverviewPanel(panelX, panelY, panelWidth, panelHeight, config_, stateStore_);
+        sourcesPanel_->hide();
         destinationsPanel_->hide();
 
         auto* footer = new Fl_Box(kSidebarWidth, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth,
@@ -358,7 +395,7 @@ private:
                                   UiTheme::kMutedText);
 
         window_->end();
-        window_->resizable(sourcesPanel_);
+        window_->resizable(overviewPanel_);
         updateConfigurationSummary();
     }
 
@@ -383,33 +420,98 @@ private:
     }
 
     void showSourcesPage() {
+        overviewPanel_->hide();
         destinationsPanel_->hide();
         sourcesPanel_->show();
+        styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         styleButton(*sourcesNavigationButton_, UiTheme::kCard, UiTheme::kText);
         styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         window_->redraw();
     }
 
     void showDestinationsPage() {
+        overviewPanel_->hide();
         sourcesPanel_->hide();
         destinationsPanel_->refresh();
         destinationsPanel_->show();
+        styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         styleButton(*destinationsNavigationButton_, UiTheme::kCard, UiTheme::kText);
         window_->redraw();
     }
 
+    void showOverviewPage() {
+        sourcesPanel_->hide();
+        destinationsPanel_->hide();
+        overviewPanel_->refresh();
+        overviewPanel_->show();
+        styleButton(*overviewNavigationButton_, UiTheme::kCard, UiTheme::kText);
+        styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        window_->redraw();
+    }
+
     void handleConfigChanged() {
         sourcesPanel_->refresh();
+        initializeRouteStates();
+        restartSourceWatcher();
+        overviewPanel_->refresh();
         updateConfigurationSummary();
     }
 
-    void startMirrorRun() {
+    void initializeRouteStates() {
+        for (const BackupRoute& route : config_.routes) {
+            if (!route.isMirrorEnabled || stateStore_.routeState(route.sourceId, route.destinationId).has_value()) {
+                continue;
+            }
+            stateStore_.markRouteDirty(route.sourceId, route.destinationId);
+        }
+    }
+
+    void restartSourceWatcher() {
+        sourceWatcher_.start(config_.manualSources, config_.settings.debounceSeconds, [this](const std::string& sourceId) {
+            Fl::awake(sourceChangedAwake, new SourceChangeNotification{this, sourceId});
+        });
+        const std::string status = "Watching " + std::to_string(sourceWatcher_.watchedSourceCount()) +
+                                   " Sources for changes.";
+        footerStatus_->copy_label(status.c_str());
+    }
+
+    void markSourceDirty(const std::string& sourceId) {
+        std::size_t markedCount = 0;
+        for (const BackupRoute& route : config_.routes) {
+            if (route.sourceId != sourceId || !route.isMirrorEnabled) {
+                continue;
+            }
+            stateStore_.markRouteDirty(route.sourceId, route.destinationId);
+            ++markedCount;
+        }
+        if (markedCount > 0) {
+            footerStatus_->copy_label("Change detected. Mirror is pending.");
+            overviewPanel_->refresh();
+            nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+        }
+    }
+
+    void checkAutomaticWork() {
+        if (isBackupRunning_ || std::chrono::steady_clock::now() < nextAutomaticAttempt_) {
+            return;
+        }
+        const std::vector<MirrorPlan> pendingPlans = backupEngine_.previewPendingMirrors(config_, stateStore_);
+        if (pendingPlans.empty()) {
+            nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+            return;
+        }
+        startMirrorRun(true);
+    }
+
+    void startMirrorRun(bool pendingOnly = false) {
         if (isBackupRunning_) {
             return;
         }
         try {
-            const std::vector<MirrorPlan> plans = backupEngine_.previewMirrors(config_);
+            const std::vector<MirrorPlan> plans = pendingOnly ? backupEngine_.previewPendingMirrors(config_, stateStore_)
+                                                               : backupEngine_.previewMirrors(config_);
             if (plans.empty()) {
                 footerStatus_->copy_label("No Mirror routes are configured.");
                 return;
@@ -421,10 +523,13 @@ private:
             runNowButton_->deactivate();
             const std::string status = "Mirroring " + std::to_string(plans.size()) + " configured Sources...";
             footerStatus_->copy_label(status.c_str());
-            backupThread_ = std::thread([this] {
+            const BackupConfig configSnapshot = config_;
+            backupThread_ = std::thread([this, pendingOnly, configSnapshot] {
                 BackupRunSummary result;
                 try {
-                    result = backupEngine_.runMirrors(config_, stateStore_, dataDirectory_ / L"logs");
+                    result = pendingOnly
+                                 ? backupEngine_.runPendingMirrors(configSnapshot, stateStore_, dataDirectory_ / L"logs")
+                                 : backupEngine_.runMirrors(configSnapshot, stateStore_, dataDirectory_ / L"logs");
                 } catch (const std::exception& error) {
                     result.failed = 1;
                     result.messages.push_back(error.what());
@@ -456,6 +561,8 @@ private:
         const std::string status = "Mirror finished: " + std::to_string(result.succeeded) + " succeeded, " +
                                    std::to_string(result.failed) + " failed.";
         footerStatus_->copy_label(status.c_str());
+        overviewPanel_->refresh();
+        nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
         window_->redraw();
     }
 

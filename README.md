@@ -10,7 +10,8 @@ A lightweight Windows tray application for configuring and running personal file
 - Manual Sources can be connected to or disconnected from a selected Destination in bulk; new routes enable Mirror and Snapshots by default.
 - `Run now` performs configured Mirrors sequentially in the background. Mirrors preserve their original path under `<destination>\BackItUpTool\Mirrors`, such as `C\Users\name\Documents`, and reject any Source/Destination overlap.
 - Manual Sources are watched automatically. Changes are debounced, saved as pending work in SQLite, mirrored when the Destination is available, and remain queued across app restarts or removable-drive disconnections.
-- The Overview page shows Destination availability, pending Mirrors, the most recent successful Mirror, automatic-watching status, and recent failures.
+- Each changed Source also receives a ZIP Snapshot after its Mirror succeeds. Snapshots are stored below `<destination>\BackItUpTool\Snapshots` using the original readable path, then kept daily for 30 days and monthly for 12 months by default.
+- The Overview page shows Destination availability, pending Mirrors, the most recent successful Mirror and Snapshot, automatic-watching status, and recent failures.
 - Tray icon with left-click Open and right-click Open/Exit actions.
 - Tray-only startup and hide-on-close behavior.
 - Low-CPU message loop that continues to dispatch tray events while the FLTK window is hidden.

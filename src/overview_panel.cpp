@@ -105,7 +105,8 @@ void OverviewPanel::refresh() {
         }
     }
     lastMirror_->copy_label(latestSuccess.has_value() ? latestSuccess->c_str() : "Not run yet");
-    lastSnapshot_->copy_label("Not created yet");
+    const std::optional<std::string> latestSnapshot = stateStore_.latestSnapshotUtc();
+    lastSnapshot_->copy_label(latestSnapshot.has_value() ? latestSnapshot->c_str() : "Not created yet");
 
     const std::string watcherText = std::to_string(config_.manualSources.size()) + " Sources configured";
     watcherStatus_->copy_label(watcherText.c_str());

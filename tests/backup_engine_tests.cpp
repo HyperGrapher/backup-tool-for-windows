@@ -53,3 +53,35 @@ TEST_CASE("pending work waits for a missing folder Destination and runs when it 
 
     std::filesystem::remove_all(testRoot, cleanupError);
 }
+
+TEST_CASE("a changed route creates a ZIP snapshot beside the readable source path") {
+    const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path testRoot =
+        std::filesystem::temp_directory_path() / ("back-it-up-tool-snapshot-test-" + std::to_string(suffix));
+    const std::filesystem::path source = testRoot / "Documents" / "Example";
+    const std::filesystem::path destination = testRoot / "destination";
+    std::filesystem::create_directories(source);
+    std::filesystem::create_directories(destination);
+    {
+        std::ofstream output{source / "file.txt"};
+        output << "snapshot content";
+    }
+
+    BackupConfig config;
+    config.manualSources.push_back(ManualSource{"source-one", source, ManualSourceKind::folder});
+    config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
+    config.routes.push_back(BackupRoute{"source-one", "destination-one", true, true, {}});
+    StateStore stateStore{testRoot / "state.db"};
+    stateStore.markRouteDirty("source-one", "destination-one");
+
+    BackupEngine engine;
+    const BackupRunSummary summary = engine.runPendingMirrors(config, stateStore, testRoot / "logs");
+    REQUIRE(summary.succeeded == 1);
+    const std::vector<SnapshotRecord> snapshots = stateStore.snapshotRecords("source-one", "destination-one");
+    REQUIRE(snapshots.size() == 1);
+    REQUIRE(std::filesystem::exists(snapshots.front().archivePath));
+    REQUIRE(snapshots.front().archivePath.string().find("Snapshots") != std::string::npos);
+
+    std::error_code cleanupError;
+    std::filesystem::remove_all(testRoot, cleanupError);
+}

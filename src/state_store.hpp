@@ -40,6 +40,15 @@ struct ActivityRecord {
     bool operator==(const ActivityRecord&) const = default;
 };
 
+struct SnapshotRecord {
+    std::int64_t id{};
+    std::string sourceId;
+    std::string destinationId;
+    std::string createdUtc;
+    std::filesystem::path archivePath;
+    std::uintmax_t archiveBytes{};
+};
+
 class StateStore final {
 public:
     explicit StateStore(const std::filesystem::path& path);
@@ -59,6 +68,15 @@ public:
     void completeRouteSuccess(std::string_view sourceId, std::string_view destinationId,
                               std::string_view successUtc);
     void completeRouteFailure(std::string_view sourceId, std::string_view destinationId, std::string_view error);
+
+    [[nodiscard]] std::optional<std::string> latestSnapshotUtc(std::string_view sourceId,
+                                                                std::string_view destinationId) const;
+    [[nodiscard]] std::optional<std::string> latestSnapshotUtc() const;
+    [[nodiscard]] std::vector<SnapshotRecord> snapshotRecords(std::string_view sourceId,
+                                                               std::string_view destinationId) const;
+    void recordSnapshot(std::string_view sourceId, std::string_view destinationId, std::string_view createdUtc,
+                        const std::filesystem::path& archivePath, std::uintmax_t archiveBytes);
+    void removeSnapshotRecord(std::int64_t id);
 
     void appendActivity(std::string_view occurredUtc, std::string_view severity, std::string_view message,
                         std::optional<std::string_view> sourceId = std::nullopt,

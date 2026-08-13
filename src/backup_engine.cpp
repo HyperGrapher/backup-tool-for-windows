@@ -8,6 +8,7 @@
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -100,6 +101,81 @@ namespace {
         throw std::runtime_error("Unable to read robocopy's result.");
     }
     return exitCode;
+}
+
+void runTarZip(const std::filesystem::path& source, const std::filesystem::path& archivePath) {
+    const std::filesystem::path parent = source.parent_path();
+    const std::filesystem::path name = source.filename();
+    std::wstring command = L"tar.exe -a -c -f " + quoteArgument(archivePath) + L" -C " + quoteArgument(parent) +
+                           L" " + quoteArgument(name);
+    std::vector<wchar_t> writable(command.begin(), command.end());
+    writable.push_back(L'\0');
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESHOWWINDOW;
+    startup.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION process{};
+    if (CreateProcessW(nullptr, writable.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
+                       &process) == FALSE) {
+        throw std::runtime_error("Unable to start Windows tar for the ZIP snapshot.");
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD exitCode{};
+    const BOOL receivedCode = GetExitCodeProcess(process.hProcess, &exitCode);
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    if (receivedCode == FALSE || exitCode != 0) {
+        throw std::runtime_error("ZIP snapshot creation failed.");
+    }
+}
+
+[[nodiscard]] std::string utcFilenameStamp() {
+    const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm utc{};
+    gmtime_s(&utc, &now);
+    std::ostringstream text;
+    text << std::put_time(&utc, "%Y-%m-%d_%H%M%S");
+    return text.str();
+}
+
+[[nodiscard]] bool isSnapshotDue(const std::optional<std::string>& latestSnapshot, int intervalHours) {
+    if (!latestSnapshot.has_value()) {
+        return true;
+    }
+    std::tm timestamp{};
+    std::istringstream input{*latestSnapshot};
+    input >> std::get_time(&timestamp, "%Y-%m-%dT%H:%M:%SZ");
+    if (input.fail()) {
+        return true;
+    }
+    const std::time_t previous = _mkgmtime(&timestamp);
+    const std::time_t current = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    return std::difftime(current, previous) >= static_cast<double>(intervalHours) * 60.0 * 60.0;
+}
+
+void pruneSnapshots(const BackupRoute& route, StateStore& stateStore) {
+    const std::vector<SnapshotRecord> records = stateStore.snapshotRecords(route.sourceId, route.destinationId);
+    std::set<std::string> keptDays;
+    std::set<std::string> keptMonths;
+    for (const SnapshotRecord& record : records) {
+        const std::string day = record.createdUtc.substr(0, 10);
+        const std::string month = record.createdUtc.substr(0, 7);
+        bool keep = false;
+        if (keptDays.size() < static_cast<std::size_t>(route.snapshotPolicy.retainDaily) && keptDays.insert(day).second) {
+            keep = true;
+        } else if (keptMonths.size() < static_cast<std::size_t>(route.snapshotPolicy.retainMonthly) &&
+                   keptMonths.insert(month).second) {
+            keep = true;
+        }
+        if (keep) {
+            continue;
+        }
+        std::error_code error;
+        std::filesystem::remove(record.archivePath, error);
+        if (!error || !std::filesystem::exists(record.archivePath)) {
+            stateStore.removeSnapshotRecord(record.id);
+        }
+    }
 }
 
 }  // namespace
@@ -210,6 +286,20 @@ BackupRunSummary BackupEngine::runPlans(const BackupConfig& config, const std::v
             stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.succeeded;
+            const auto route = std::ranges::find_if(config.routes, [&](const BackupRoute& candidate) {
+                return candidate.sourceId == plan.sourceId && candidate.destinationId == plan.destinationId;
+            });
+            const auto destination = std::ranges::find(config.destinations, plan.destinationId, &Destination::id);
+            if (route != config.routes.end() && destination != config.destinations.end() && route->areSnapshotsEnabled) {
+                try {
+                    createDueSnapshot(*route, source, *destination, stateStore);
+                } catch (const std::exception& error) {
+                    const std::string snapshotError = "Snapshot failed for " + pathToUtf8(source.path) + ": " + error.what();
+                    stateStore.appendActivity(utcNow(), "error", snapshotError, plan.sourceId, plan.destinationId);
+                    summary.messages.push_back(snapshotError);
+                    ++summary.failed;
+                }
+            }
         } catch (const std::exception& error) {
             const std::string message = "Mirror failed for " + pathToUtf8(source.path) + ": " + error.what();
             stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
@@ -219,4 +309,24 @@ BackupRunSummary BackupEngine::runPlans(const BackupConfig& config, const std::v
         }
     }
     return summary;
+}
+
+void BackupEngine::createDueSnapshot(const BackupRoute& route, const ManualSource& source,
+                                     const Destination& destination, StateStore& stateStore) const {
+    if (!isSnapshotDue(stateStore.latestSnapshotUtc(route.sourceId, route.destinationId),
+                       route.snapshotPolicy.intervalHours)) {
+        return;
+    }
+    const std::filesystem::path snapshotFolder = destinationRoot(destination) / L"BackItUpTool" / L"Snapshots" /
+                                                 buildMirrorRelativePath(source.path).parent_path();
+    std::filesystem::create_directories(snapshotFolder);
+    const std::filesystem::path archivePath = snapshotFolder /
+                                              (source.path.filename().wstring() + L"_" +
+                                               std::filesystem::path{utcFilenameStamp()}.wstring() + L".zip");
+    runTarZip(source.path, archivePath);
+    stateStore.recordSnapshot(route.sourceId, route.destinationId, utcNow(), archivePath,
+                              std::filesystem::file_size(archivePath));
+    pruneSnapshots(route, stateStore);
+    stateStore.appendActivity(utcNow(), "info", "Snapshot created at " + pathToUtf8(archivePath) + ".",
+                              route.sourceId, route.destinationId);
 }

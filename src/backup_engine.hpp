@@ -37,4 +37,6 @@ private:
     [[nodiscard]] BackupRunSummary runPlans(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
                                             StateStore& stateStore,
                                             const std::filesystem::path& logDirectory) const;
+    void createDueSnapshot(const BackupRoute& route, const ManualSource& source, const Destination& destination,
+                           StateStore& stateStore) const;
 };

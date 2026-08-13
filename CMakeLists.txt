@@ -50,6 +50,7 @@ add_library(back_it_up_tool_core STATIC
     src/sources_panel.cpp
     src/source_watcher.cpp
     src/state_store.cpp
+    src/size_approval_dialog.cpp
 )
 target_include_directories(back_it_up_tool_core PUBLIC src)
 target_link_libraries(back_it_up_tool_core PUBLIC

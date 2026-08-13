@@ -8,13 +8,16 @@
 #include <chrono>
 #include <algorithm>
 #include <cstdint>
+#include <ctime>
 #include <filesystem>
 #include <functional>
+#include <iomanip>
 #include <iterator>
 #include <mutex>
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <utility>
@@ -36,6 +39,7 @@
 #include "projects_panel.hpp"
 #include "projects_scanner.hpp"
 #include "source_watcher.hpp"
+#include "size_approval_dialog.hpp"
 #include "sources_panel.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
@@ -157,6 +161,15 @@ void configureLogging(const std::filesystem::path& dataDirectory) {
     spdlog::set_default_logger(std::move(logger));
     spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] [%l] %v");
     spdlog::flush_on(spdlog::level::info);
+}
+
+[[nodiscard]] std::string utcNowForApproval() {
+    const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm utc{};
+    gmtime_s(&utc, &now);
+    std::ostringstream text;
+    text << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+    return text.str();
 }
 
 [[nodiscard]] BackupConfig loadOrCreateConfig(const ConfigStore& store) {
@@ -598,6 +611,23 @@ private:
             if (plans.empty()) {
                 footerStatus_->copy_label("No Mirror routes are configured.");
                 return;
+            }
+            const std::vector<SizeWarning> sizeWarnings = backupEngine_.findSizeWarnings(config_, plans, stateStore_);
+            if (!sizeWarnings.empty()) {
+                SizeApprovalDialog dialog{sizeWarnings};
+                const SizeApprovalResult decision = dialog.show();
+                if (decision == SizeApprovalResult::skip) {
+                    footerStatus_->copy_label("Large items skipped. They remain pending.");
+                    nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::minutes{5};
+                    return;
+                }
+                if (decision == SizeApprovalResult::approveProjectsAlways) {
+                    for (const SizeWarning& warning : sizeWarnings) {
+                        if (warning.isProject) {
+                            stateStore_.setPermanentSizeApproval(warning.sourceId, utcNowForApproval());
+                        }
+                    }
+                }
             }
             if (backupThread_.joinable()) {
                 backupThread_.join();

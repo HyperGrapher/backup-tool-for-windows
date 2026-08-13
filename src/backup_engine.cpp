@@ -325,6 +325,25 @@ std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& 
     return pendingPlans;
 }
 
+std::vector<SizeWarning> BackupEngine::findSizeWarnings(const BackupConfig& config,
+                                                        const std::vector<MirrorPlan>& plans,
+                                                        const StateStore& stateStore) const {
+    std::vector<SizeWarning> warnings;
+    for (const MirrorPlan& plan : plans) {
+        if (plan.isProjectsSource) {
+            const ProjectsSource source{plan.sourceId, plan.source};
+            const ProjectPreflight preflight = scanProject(source, config.settings);
+            if (!preflight.requiresSizeApproval(stateStore.hasPermanentSizeApproval(plan.sourceId))) {
+                continue;
+            }
+            warnings.push_back(SizeWarning{plan.sourceId, plan.destinationId, plan.source,
+                                           preflight.eligibleSizeBytes, preflight.largeFiles, true});
+            continue;
+        }
+    }
+    return warnings;
+}
+
 BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, StateStore& stateStore,
                                           const std::filesystem::path& logDirectory) const {
     const std::vector<MirrorPlan> plans = previewMirrors(config);

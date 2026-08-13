@@ -131,3 +131,64 @@ TEST_CASE("a Projects Root mirrors only opted-in loose project files") {
     std::error_code cleanupError;
     std::filesystem::remove_all(testRoot, cleanupError);
 }
+
+TEST_CASE("size warnings use only eligible Project content") {
+    const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path testRoot =
+        std::filesystem::temp_directory_path() / ("back-it-up-tool-size-warning-test-" + std::to_string(suffix));
+    const std::filesystem::path projectsRoot = testRoot / "Projects";
+    const std::filesystem::path project = projectsRoot / "LooseProject";
+    const std::filesystem::path destination = testRoot / "destination";
+    std::filesystem::create_directories(project / "build");
+    std::filesystem::create_directories(destination);
+    {
+        std::ofstream{project / ".backup-watch"} << "01234567-89ab-4def-8123-456789abcdef";
+        std::ofstream{project / "large.bin"} << std::string(60, 'l');
+        std::ofstream{project / "build" / "ignored.bin"} << std::string(500, 'b');
+    }
+
+    BackupConfig config;
+    config.projectsRoots.push_back(ProjectsRoot{"root-one", projectsRoot});
+    config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
+    config.routes.push_back(BackupRoute{"root-one", "destination-one", true, false, {}});
+    config.settings.largeFileThresholdBytes = 50;
+    config.settings.projectSizeThresholdBytes = 1000;
+    StateStore stateStore{testRoot / "state.db"};
+    stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
+
+    BackupEngine engine;
+    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, stateStore);
+    const std::vector<SizeWarning> warnings = engine.findSizeWarnings(config, plans, stateStore);
+    REQUIRE(warnings.size() == 1);
+    REQUIRE(warnings.front().isProject);
+    REQUIRE(warnings.front().eligibleSizeBytes == 60);
+    REQUIRE(warnings.front().largeFiles.size() == 1);
+
+    std::error_code cleanupError;
+    std::filesystem::remove_all(testRoot, cleanupError);
+}
+
+TEST_CASE("manual folder routes do not show the Project size warning") {
+    const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path testRoot =
+        std::filesystem::temp_directory_path() / ("back-it-up-tool-manual-size-test-" + std::to_string(suffix));
+    const std::filesystem::path source = testRoot / "source";
+    const std::filesystem::path destination = testRoot / "destination";
+    std::filesystem::create_directories(source);
+    std::filesystem::create_directories(destination);
+    std::ofstream{source / "large.bin"} << std::string(60, 'l');
+
+    BackupConfig config;
+    config.manualSources.push_back(ManualSource{"source-one", source, ManualSourceKind::folder});
+    config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
+    config.routes.push_back(BackupRoute{"source-one", "destination-one", true, false, {}});
+    config.settings.largeFileThresholdBytes = 50;
+    StateStore stateStore{testRoot / "state.db"};
+    stateStore.markRouteDirty("source-one", "destination-one");
+
+    BackupEngine engine;
+    REQUIRE(engine.findSizeWarnings(config, engine.previewPendingMirrors(config, stateStore), stateStore).empty());
+
+    std::error_code cleanupError;
+    std::filesystem::remove_all(testRoot, cleanupError);
+}

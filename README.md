@@ -12,6 +12,7 @@ A lightweight Windows tray application for configuring and running personal file
 - Manual Sources are watched automatically. Changes are debounced, saved as pending work in SQLite, mirrored when the Destination is available, and remain queued across app restarts or removable-drive disconnections.
 - Project Roots can be added and connected from the Projects page. Immediate child folders opt in with `.backup-watch`; the app gives empty markers a stable UUID and periodically discovers new opted-in folders.
 - Project backups exclude `.git` repositories, `build`, `node_modules`, junctions, `.backup-watch`, `.backup-ignore`, and paths matched by `.backup-ignore`. Hidden loose files remain included.
+- Before a Project backup, an always-on-top approval window lists any eligible file over 50 MiB or Project total over 150 MiB. You can approve once, permanently allow that Project, or skip it; skipped work stays pending.
 - Each changed Source also receives a ZIP Snapshot after its Mirror succeeds. Snapshots are stored below `<destination>\BackItUpTool\Snapshots` using the original readable path, then kept daily for 30 days and monthly for 12 months by default.
 - The Overview page shows Destination availability, pending Mirrors, the most recent successful Mirror and Snapshot, automatic-watching status, and recent failures.
 - Tray icon with left-click Open and right-click Open/Exit actions.

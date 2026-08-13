@@ -11,10 +11,13 @@ class StateStore;
 [[nodiscard]] std::filesystem::path buildMirrorRelativePath(const std::filesystem::path& sourcePath);
 
 struct MirrorPlan {
+    std::string routeSourceId;
     std::string sourceId;
     std::string destinationId;
     std::filesystem::path source;
     std::filesystem::path destination;
+    ManualSourceKind sourceKind{ManualSourceKind::folder};
+    bool isProjectsSource{};
 };
 
 struct BackupRunSummary {
@@ -37,6 +40,6 @@ private:
     [[nodiscard]] BackupRunSummary runPlans(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
                                             StateStore& stateStore,
                                             const std::filesystem::path& logDirectory) const;
-    void createDueSnapshot(const BackupRoute& route, const ManualSource& source, const Destination& destination,
+    void createDueSnapshot(const BackupRoute& route, const MirrorPlan& plan, const Destination& destination,
                            StateStore& stateStore) const;
 };

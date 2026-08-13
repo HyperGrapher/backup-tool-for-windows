@@ -26,6 +26,31 @@ struct ProjectsDiscovery {
     std::vector<ProjectDiscoveryProblem> problems;
 };
 
+struct ConfiguredProjectsSource {
+    std::string rootId;
+    ProjectsSource source;
+
+    bool operator==(const ConfiguredProjectsSource&) const = default;
+};
+
+struct ConfiguredProjectsDiscovery {
+    std::vector<ConfiguredProjectsSource> sources;
+    std::vector<ProjectDiscoveryProblem> problems;
+};
+
+struct EligibleProjectFile {
+    std::filesystem::path relativePath;
+    std::uint64_t sizeBytes{};
+
+    bool operator==(const EligibleProjectFile&) const = default;
+};
+
+struct ProjectContents {
+    ProjectsSource source;
+    std::vector<EligibleProjectFile> files;
+    bool isGitRepository{};
+};
+
 struct LargeEligibleFile {
     std::filesystem::path relativePath;
     std::uint64_t sizeBytes{};
@@ -45,5 +70,6 @@ struct ProjectPreflight {
 };
 
 [[nodiscard]] ProjectsDiscovery discoverProjects(const ProjectsRoot& root);
+[[nodiscard]] ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<ProjectsRoot>& roots);
+[[nodiscard]] ProjectContents collectProjectContents(const ProjectsSource& source);
 [[nodiscard]] ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings);
-

@@ -109,3 +109,42 @@ TEST_CASE("a Projects Source that is itself a Git repository has no Eligible Ite
     REQUIRE(preflight.eligibleFileCount == 0);
     REQUIRE_FALSE(preflight.requiresSizeApproval(false));
 }
+
+TEST_CASE("project contents use the same exclusions as the size check") {
+    TemporaryDirectory directory;
+    directory.write("Project/.backup-watch", "01234567-89ab-4def-8123-456789abcdef");
+    directory.write("Project/.backup-ignore", "ignored.txt\n");
+    directory.write("Project/keep.txt", "keep");
+    directory.write("Project/hidden/.env", "hidden");
+    directory.write("Project/ignored.txt", "ignored");
+    directory.write("Project/build/output.txt", "build");
+    directory.write("Project/node_modules/package/file.txt", "package");
+    directory.write("Project/Repository/.git/HEAD", "head");
+    directory.write("Project/Repository/loose.txt", "repo");
+
+    const ProjectContents contents = collectProjectContents(
+        ProjectsSource{"01234567-89ab-4def-8123-456789abcdef", directory.path() / "Project"});
+
+    REQUIRE(contents.files.size() == 2);
+    REQUIRE(std::ranges::any_of(contents.files, [](const EligibleProjectFile& file) {
+        return file.relativePath == "keep.txt";
+    }));
+    REQUIRE(std::ranges::any_of(contents.files, [](const EligibleProjectFile& file) {
+        return file.relativePath == std::filesystem::path{"hidden"} / ".env";
+    }));
+}
+
+TEST_CASE("configured Projects Roots discover child projects with their parent Root IDs") {
+    TemporaryDirectory first;
+    TemporaryDirectory second;
+    first.write("One/.backup-watch", "01234567-89ab-4def-8123-456789abcdef");
+    second.write("Two/.backup-watch", "fedcba98-7654-4abc-8123-fedcba987654");
+
+    const ConfiguredProjectsDiscovery discovery = discoverConfiguredProjects(
+        {ProjectsRoot{"root-one", first.path()}, ProjectsRoot{"root-two", second.path()}});
+
+    REQUIRE(discovery.problems.empty());
+    REQUIRE(discovery.sources.size() == 2);
+    REQUIRE(discovery.sources[0].rootId == "root-one");
+    REQUIRE(discovery.sources[1].rootId == "root-two");
+}

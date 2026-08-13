@@ -9,6 +9,7 @@
 #include <FL/Fl_Browser.H>
 
 #include "connected_volume.hpp"
+#include "projects_scanner.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
 
@@ -89,10 +90,20 @@ void OverviewPanel::refresh() {
     destinationHealth_->copy_label(destinationText.c_str());
 
     const std::vector<RouteRuntimeState> states = stateStore_.routeStates();
+    const ConfiguredProjectsDiscovery projects = discoverConfiguredProjects(config_.projectsRoots);
     const auto pendingCount = std::ranges::count_if(states, [&](const RouteRuntimeState& state) {
         return state.isDirty && std::ranges::any_of(config_.routes, [&](const BackupRoute& route) {
-            return route.sourceId == state.sourceId && route.destinationId == state.destinationId &&
-                   route.isMirrorEnabled;
+            if (route.destinationId != state.destinationId || !route.isMirrorEnabled) {
+                return false;
+            }
+            if (route.sourceId == state.sourceId) {
+                return std::ranges::any_of(config_.manualSources, [&](const ManualSource& source) {
+                    return source.id == state.sourceId;
+                });
+            }
+            return std::ranges::any_of(projects.sources, [&](const ConfiguredProjectsSource& source) {
+                return source.rootId == route.sourceId && source.source.id == state.sourceId;
+            });
         });
     });
     const std::string pendingText = std::to_string(pendingCount);
@@ -108,7 +119,8 @@ void OverviewPanel::refresh() {
     const std::optional<std::string> latestSnapshot = stateStore_.latestSnapshotUtc();
     lastSnapshot_->copy_label(latestSnapshot.has_value() ? latestSnapshot->c_str() : "Not created yet");
 
-    const std::string watcherText = std::to_string(config_.manualSources.size()) + " Sources configured";
+    const std::size_t watchedSourceCount = config_.manualSources.size() + projects.sources.size();
+    const std::string watcherText = std::to_string(watchedSourceCount) + " Sources configured";
     watcherStatus_->copy_label(watcherText.c_str());
 
     recentFailures_->clear();

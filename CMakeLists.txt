@@ -45,6 +45,7 @@ add_library(back_it_up_tool_core STATIC
     src/ignore_rules.cpp
     src/native_file_dialog.cpp
     src/overview_panel.cpp
+    src/projects_panel.cpp
     src/projects_scanner.cpp
     src/sources_panel.cpp
     src/source_watcher.cpp

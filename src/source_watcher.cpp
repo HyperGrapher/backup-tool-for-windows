@@ -32,6 +32,7 @@ struct SourceWatcher::Registration {
     std::string sourceId;
     std::filesystem::path directory;
     std::optional<std::wstring> fileNameFilter;
+    bool isRecursive{true};
     HANDLE handle{INVALID_HANDLE_VALUE};
     OVERLAPPED overlapped{};
     std::array<std::byte, 64 * 1024> buffer{};
@@ -45,6 +46,23 @@ SourceWatcher::~SourceWatcher() {
 }
 
 void SourceWatcher::start(const std::vector<ManualSource>& sources, int debounceSeconds, ChangeCallback callback) {
+    std::vector<SourceWatchTarget> targets;
+    targets.reserve(sources.size());
+    for (const ManualSource& source : sources) {
+        SourceWatchTarget target;
+        target.sourceId = source.id;
+        target.directory = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
+        target.isRecursive = source.kind == ManualSourceKind::folder;
+        if (source.kind == ManualSourceKind::file) {
+            target.fileNameFilter = source.path.filename().native();
+        }
+        targets.push_back(std::move(target));
+    }
+    start(targets, debounceSeconds, std::move(callback));
+}
+
+void SourceWatcher::start(const std::vector<SourceWatchTarget>& targets, int debounceSeconds,
+                          ChangeCallback callback) {
     stop();
     if (debounceSeconds <= 0) {
         throw std::invalid_argument("Source watcher debounce must be positive.");
@@ -58,12 +76,13 @@ void SourceWatcher::start(const std::vector<ManualSource>& sources, int debounce
     }
     completionPort_ = completionPort;
 
-    for (const ManualSource& source : sources) {
+    for (const SourceWatchTarget& target : targets) {
         auto registration = std::make_unique<Registration>();
-        registration->sourceId = source.id;
-        registration->directory = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
-        if (source.kind == ManualSourceKind::file) {
-            registration->fileNameFilter = lowercase(source.path.filename().native());
+        registration->sourceId = target.sourceId;
+        registration->directory = target.directory;
+        registration->isRecursive = target.isRecursive;
+        if (target.fileNameFilter.has_value()) {
+            registration->fileNameFilter = lowercase(*target.fileNameFilter);
         }
 
         registration->handle = CreateFileW(
@@ -171,7 +190,7 @@ void SourceWatcher::issueRead(Registration& registration) {
     DWORD ignoredBytes{};
     const BOOL started = ReadDirectoryChangesW(
         registration.handle, registration.buffer.data(), static_cast<DWORD>(registration.buffer.size()),
-        registration.fileNameFilter.has_value() ? FALSE : TRUE, kChangeFilter, &ignoredBytes, &registration.overlapped,
+        registration.isRecursive ? TRUE : FALSE, kChangeFilter, &ignoredBytes, &registration.overlapped,
         nullptr);
     if (started == FALSE) {
         registration.lastChange = std::chrono::steady_clock::now();

@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "connected_volume.hpp"
+#include "projects_scanner.hpp"
 #include "state_store.hpp"
 
 namespace {
@@ -61,6 +62,11 @@ namespace {
         throw std::runtime_error("This initial mirror only supports Manual Sources.");
     }
     return *source;
+}
+
+[[nodiscard]] const ProjectsRoot* findProjectsRoot(const BackupConfig& config, const std::string& id) {
+    const auto root = std::ranges::find(config.projectsRoots, id, &ProjectsRoot::id);
+    return root == config.projectsRoots.end() ? nullptr : &*root;
 }
 
 [[nodiscard]] std::filesystem::path destinationRoot(const Destination& destination) {
@@ -153,8 +159,9 @@ void runTarZip(const std::filesystem::path& source, const std::filesystem::path&
     return std::difftime(current, previous) >= static_cast<double>(intervalHours) * 60.0 * 60.0;
 }
 
-void pruneSnapshots(const BackupRoute& route, StateStore& stateStore) {
-    const std::vector<SnapshotRecord> records = stateStore.snapshotRecords(route.sourceId, route.destinationId);
+void pruneSnapshots(const BackupRoute& route, std::string_view sourceId, std::string_view destinationId,
+                    StateStore& stateStore) {
+    const std::vector<SnapshotRecord> records = stateStore.snapshotRecords(sourceId, destinationId);
     std::set<std::string> keptDays;
     std::set<std::string> keptMonths;
     for (const SnapshotRecord& record : records) {
@@ -174,6 +181,55 @@ void pruneSnapshots(const BackupRoute& route, StateStore& stateStore) {
         std::filesystem::remove(record.archivePath, error);
         if (!error || !std::filesystem::exists(record.archivePath)) {
             stateStore.removeSnapshotRecord(record.id);
+        }
+    }
+}
+
+void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::path& destination) {
+    const ProjectContents contents = collectProjectContents(source);
+    std::filesystem::create_directories(destination);
+    std::set<std::filesystem::path> eligiblePaths;
+    for (const EligibleProjectFile& file : contents.files) {
+        const std::filesystem::path normalizedRelativePath = file.relativePath.lexically_normal();
+        eligiblePaths.insert(normalizedRelativePath);
+        const std::filesystem::path target = destination / normalizedRelativePath;
+        std::filesystem::create_directories(target.parent_path());
+        std::filesystem::copy_file(source.path / normalizedRelativePath, target,
+                                   std::filesystem::copy_options::overwrite_existing);
+    }
+
+    std::error_code iterationError;
+    for (std::filesystem::recursive_directory_iterator iterator{destination, iterationError}, end; iterator != end;
+         iterator.increment(iterationError)) {
+        if (iterationError) {
+            throw std::runtime_error("Unable to reconcile the Project mirror.");
+        }
+        std::error_code typeError;
+        if (!iterator->is_regular_file(typeError) || typeError) {
+            continue;
+        }
+        const std::filesystem::path relativePath = iterator->path().lexically_relative(destination).lexically_normal();
+        if (!eligiblePaths.contains(relativePath)) {
+            std::filesystem::remove(iterator->path());
+        }
+    }
+    if (iterationError) {
+        throw std::runtime_error("Unable to reconcile the Project mirror.");
+    }
+
+    std::vector<std::filesystem::path> directories;
+    for (const std::filesystem::directory_entry& entry : std::filesystem::recursive_directory_iterator{destination}) {
+        if (entry.is_directory()) {
+            directories.push_back(entry.path());
+        }
+    }
+    std::ranges::sort(directories, [](const auto& left, const auto& right) {
+        return std::ranges::distance(left) > std::ranges::distance(right);
+    });
+    for (const std::filesystem::path& directory : directories) {
+        std::error_code ignoredError;
+        if (std::filesystem::is_empty(directory, ignoredError) && !ignoredError) {
+            std::filesystem::remove(directory, ignoredError);
         }
     }
 }
@@ -199,21 +255,47 @@ std::vector<MirrorPlan> BackupEngine::previewMirrors(const BackupConfig& config)
         if (!route.isMirrorEnabled) {
             continue;
         }
-        const ManualSource& source = findManualSource(config, route.sourceId);
-        if (!std::filesystem::exists(source.path)) {
-            throw std::runtime_error("Source is unavailable: " + pathToUtf8(source.path));
-        }
         const auto destination = std::ranges::find(config.destinations, route.destinationId, &Destination::id);
         if (destination == config.destinations.end()) {
             throw std::runtime_error("Route has an unavailable Destination.");
         }
-        const std::filesystem::path target = destinationRoot(*destination) / L"BackItUpTool" / L"Mirrors" /
-                                             buildMirrorRelativePath(source.path);
-        const std::filesystem::path sourceRoot = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
-        if (isSameOrInside(target, sourceRoot) || isSameOrInside(sourceRoot, target)) {
-            throw std::runtime_error("Refusing a mirror whose Source and Destination overlap.");
+        const std::filesystem::path availableDestinationRoot = destinationRoot(*destination);
+        const auto manualSource = std::ranges::find(config.manualSources, route.sourceId, &ManualSource::id);
+        if (manualSource != config.manualSources.end()) {
+            if (!std::filesystem::exists(manualSource->path)) {
+                throw std::runtime_error("Source is unavailable: " + pathToUtf8(manualSource->path));
+            }
+            const std::filesystem::path target = availableDestinationRoot / L"BackItUpTool" / L"Mirrors" /
+                                                 buildMirrorRelativePath(manualSource->path);
+            const std::filesystem::path sourceRoot = manualSource->kind == ManualSourceKind::folder
+                                                         ? manualSource->path
+                                                         : manualSource->path.parent_path();
+            if (isSameOrInside(target, sourceRoot) || isSameOrInside(sourceRoot, target)) {
+                throw std::runtime_error("Refusing a mirror whose Source and Destination overlap.");
+            }
+            plans.push_back(MirrorPlan{route.sourceId, manualSource->id, destination->id, manualSource->path, target,
+                                       manualSource->kind, false});
+            continue;
         }
-        plans.push_back(MirrorPlan{source.id, destination->id, source.path, target});
+
+        const ProjectsRoot* root = findProjectsRoot(config, route.sourceId);
+        if (root == nullptr) {
+            throw std::runtime_error("Route has an unavailable Source.");
+        }
+        const ProjectsDiscovery discovery = discoverProjects(*root);
+        for (const ProjectsSource& source : discovery.sources) {
+            const ProjectContents contents = collectProjectContents(source);
+            if (contents.isGitRepository) {
+                continue;
+            }
+            const std::filesystem::path target = availableDestinationRoot / L"BackItUpTool" / L"Mirrors" /
+                                                 buildMirrorRelativePath(source.path);
+            if (isSameOrInside(target, source.path) || isSameOrInside(source.path, target)) {
+                throw std::runtime_error("Refusing a mirror whose Source and Destination overlap.");
+            }
+            plans.push_back(MirrorPlan{route.sourceId, source.id, destination->id, source.path, target,
+                                       ManualSourceKind::folder, true});
+        }
     }
     return plans;
 }
@@ -225,16 +307,17 @@ std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& 
         if (!route.isMirrorEnabled) {
             continue;
         }
-        const std::optional<RouteRuntimeState> state = stateStore.routeState(route.sourceId, route.destinationId);
-        if (!state.has_value() || !state->isDirty) {
-            continue;
-        }
-
         BackupConfig singleRouteConfig = config;
         singleRouteConfig.routes = {route};
         try {
             std::vector<MirrorPlan> routePlans = previewMirrors(singleRouteConfig);
-            pendingPlans.insert(pendingPlans.end(), routePlans.begin(), routePlans.end());
+            for (MirrorPlan& plan : routePlans) {
+                const std::optional<RouteRuntimeState> state =
+                    stateStore.routeState(plan.sourceId, plan.destinationId);
+                if (state.has_value() && state->isDirty) {
+                    pendingPlans.push_back(std::move(plan));
+                }
+            }
         } catch (const std::exception&) {
             // Pending work stays in SQLite until its Source and Destination are available again.
         }
@@ -259,49 +342,50 @@ BackupRunSummary BackupEngine::runPlans(const BackupConfig& config, const std::v
     std::filesystem::create_directories(logDirectory);
     BackupRunSummary summary;
     for (const MirrorPlan& plan : plans) {
-        const ManualSource& source = findManualSource(config, plan.sourceId);
         const std::string attemptTime = utcNow();
         stateStore.beginRouteAttempt(plan.sourceId, plan.destinationId, attemptTime);
         try {
             DWORD exitCode = 1;
-            if (source.kind == ManualSourceKind::file) {
+            if (plan.isProjectsSource) {
+                mirrorProjectContents(ProjectsSource{plan.sourceId, plan.source}, plan.destination);
+            } else if (plan.sourceKind == ManualSourceKind::file) {
                 std::filesystem::create_directories(plan.destination.parent_path());
-                std::filesystem::copy_file(source.path, plan.destination,
+                std::filesystem::copy_file(plan.source, plan.destination,
                                            std::filesystem::copy_options::overwrite_existing);
             } else {
                 std::filesystem::create_directories(plan.destination);
-                exitCode = runRobocopy(source.path, plan.destination,
+                exitCode = runRobocopy(plan.source, plan.destination,
                                        logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"));
             }
             if (exitCode >= 8) {
-                const std::string message = "Mirror failed for " + pathToUtf8(source.path) + " (robocopy " + std::to_string(exitCode) + ").";
+                const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + " (robocopy " + std::to_string(exitCode) + ").";
                 stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
                 stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
                 summary.messages.push_back(message);
                 ++summary.failed;
                 continue;
             }
-            const std::string message = "Mirror completed for " + pathToUtf8(source.path) + ".";
+            const std::string message = "Mirror completed for " + pathToUtf8(plan.source) + ".";
             stateStore.completeRouteSuccess(plan.sourceId, plan.destinationId, utcNow());
             stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.succeeded;
             const auto route = std::ranges::find_if(config.routes, [&](const BackupRoute& candidate) {
-                return candidate.sourceId == plan.sourceId && candidate.destinationId == plan.destinationId;
+                return candidate.sourceId == plan.routeSourceId && candidate.destinationId == plan.destinationId;
             });
             const auto destination = std::ranges::find(config.destinations, plan.destinationId, &Destination::id);
             if (route != config.routes.end() && destination != config.destinations.end() && route->areSnapshotsEnabled) {
                 try {
-                    createDueSnapshot(*route, source, *destination, stateStore);
+                    createDueSnapshot(*route, plan, *destination, stateStore);
                 } catch (const std::exception& error) {
-                    const std::string snapshotError = "Snapshot failed for " + pathToUtf8(source.path) + ": " + error.what();
+                    const std::string snapshotError = "Snapshot failed for " + pathToUtf8(plan.source) + ": " + error.what();
                     stateStore.appendActivity(utcNow(), "error", snapshotError, plan.sourceId, plan.destinationId);
                     summary.messages.push_back(snapshotError);
                     ++summary.failed;
                 }
             }
         } catch (const std::exception& error) {
-            const std::string message = "Mirror failed for " + pathToUtf8(source.path) + ": " + error.what();
+            const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + ": " + error.what();
             stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
             stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
@@ -311,22 +395,22 @@ BackupRunSummary BackupEngine::runPlans(const BackupConfig& config, const std::v
     return summary;
 }
 
-void BackupEngine::createDueSnapshot(const BackupRoute& route, const ManualSource& source,
+void BackupEngine::createDueSnapshot(const BackupRoute& route, const MirrorPlan& plan,
                                      const Destination& destination, StateStore& stateStore) const {
-    if (!isSnapshotDue(stateStore.latestSnapshotUtc(route.sourceId, route.destinationId),
+    if (!isSnapshotDue(stateStore.latestSnapshotUtc(plan.sourceId, plan.destinationId),
                        route.snapshotPolicy.intervalHours)) {
         return;
     }
     const std::filesystem::path snapshotFolder = destinationRoot(destination) / L"BackItUpTool" / L"Snapshots" /
-                                                 buildMirrorRelativePath(source.path).parent_path();
+                                                 buildMirrorRelativePath(plan.source).parent_path();
     std::filesystem::create_directories(snapshotFolder);
     const std::filesystem::path archivePath = snapshotFolder /
-                                              (source.path.filename().wstring() + L"_" +
+                                              (plan.source.filename().wstring() + L"_" +
                                                std::filesystem::path{utcFilenameStamp()}.wstring() + L".zip");
-    runTarZip(source.path, archivePath);
-    stateStore.recordSnapshot(route.sourceId, route.destinationId, utcNow(), archivePath,
+    runTarZip(plan.isProjectsSource ? plan.destination : plan.source, archivePath);
+    stateStore.recordSnapshot(plan.sourceId, plan.destinationId, utcNow(), archivePath,
                               std::filesystem::file_size(archivePath));
-    pruneSnapshots(route, stateStore);
+    pruneSnapshots(route, plan.sourceId, plan.destinationId, stateStore);
     stateStore.appendActivity(utcNow(), "info", "Snapshot created at " + pathToUtf8(archivePath) + ".",
-                              route.sourceId, route.destinationId);
+                              plan.sourceId, plan.destinationId);
 }

@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cwctype>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -205,22 +206,42 @@ ProjectsDiscovery discoverProjects(const ProjectsRoot& root) {
     return discovery;
 }
 
-ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings) {
+ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<ProjectsRoot>& roots) {
+    ConfiguredProjectsDiscovery combined;
+    std::unordered_set<std::string> sourceIds;
+    for (const ProjectsRoot& root : roots) {
+        try {
+            ProjectsDiscovery discovery = discoverProjects(root);
+            combined.problems.insert(combined.problems.end(), std::make_move_iterator(discovery.problems.begin()),
+                                     std::make_move_iterator(discovery.problems.end()));
+            for (ProjectsSource& source : discovery.sources) {
+                if (!sourceIds.insert(source.id).second) {
+                    combined.problems.push_back(
+                        {source.path, "Duplicate .backup-watch UUID across configured Projects Roots."});
+                    continue;
+                }
+                combined.sources.push_back(ConfiguredProjectsSource{root.id, std::move(source)});
+            }
+        } catch (const std::exception& error) {
+            combined.problems.push_back({root.path, error.what()});
+        }
+    }
+    return combined;
+}
+
+ProjectContents collectProjectContents(const ProjectsSource& source) {
     if (source.id.empty() || source.path.empty()) {
         throw std::invalid_argument("Projects Source must have an ID and path.");
-    }
-    if (settings.largeFileThresholdBytes == 0 || settings.projectSizeThresholdBytes == 0) {
-        throw std::invalid_argument("Project size thresholds must be positive.");
     }
     if (!std::filesystem::is_directory(source.path)) {
         throw std::runtime_error("Projects Source is unavailable or is not a directory.");
     }
 
-    ProjectPreflight preflight;
-    preflight.source = source;
-    preflight.isGitRepository = containsGitMarker(source.path);
-    if (preflight.isGitRepository) {
-        return preflight;
+    ProjectContents contents;
+    contents.source = source;
+    contents.isGitRepository = containsGitMarker(source.path);
+    if (contents.isGitRepository) {
+        return contents;
     }
 
     const IgnoreRules ignoreRules = IgnoreRules::load(source.path / kIgnoreFileName);
@@ -257,18 +278,38 @@ ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings&
         if (typeError) {
             throw std::runtime_error("Unable to read the size of an Eligible Item.");
         }
-        const auto size = static_cast<std::uint64_t>(rawSize);
+        contents.files.push_back(EligibleProjectFile{relativePath, static_cast<std::uint64_t>(rawSize)});
+    }
+    if (iterationError) {
+        throw std::runtime_error("Unable to enumerate Projects Source completely.");
+    }
+    return contents;
+}
+
+ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings) {
+    if (source.id.empty() || source.path.empty()) {
+        throw std::invalid_argument("Projects Source must have an ID and path.");
+    }
+    if (settings.largeFileThresholdBytes == 0 || settings.projectSizeThresholdBytes == 0) {
+        throw std::invalid_argument("Project size thresholds must be positive.");
+    }
+    const ProjectContents contents = collectProjectContents(source);
+    ProjectPreflight preflight;
+    preflight.source = source;
+    preflight.isGitRepository = contents.isGitRepository;
+    if (preflight.isGitRepository) {
+        return preflight;
+    }
+    for (const EligibleProjectFile& file : contents.files) {
+        const std::uint64_t size = file.sizeBytes;
         if (std::numeric_limits<std::uint64_t>::max() - preflight.eligibleSizeBytes < size) {
             throw std::overflow_error("Projects Source size exceeds the supported range.");
         }
         preflight.eligibleSizeBytes += size;
         ++preflight.eligibleFileCount;
         if (size > settings.largeFileThresholdBytes) {
-            preflight.largeFiles.push_back({relativePath, size});
+            preflight.largeFiles.push_back({file.relativePath, size});
         }
-    }
-    if (iterationError) {
-        throw std::runtime_error("Unable to enumerate Projects Source completely.");
     }
     preflight.doesProjectExceedThreshold = preflight.eligibleSizeBytes > settings.projectSizeThresholdBytes;
     return preflight;

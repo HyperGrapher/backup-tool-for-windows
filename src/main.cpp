@@ -6,6 +6,7 @@
 #include <shlobj.h>
 
 #include <chrono>
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -17,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <FL/Fl.H>
 #include <FL/Fl_Box.H>
@@ -31,6 +33,8 @@
 #include "backup_engine.hpp"
 #include "destinations_panel.hpp"
 #include "overview_panel.hpp"
+#include "projects_panel.hpp"
+#include "projects_scanner.hpp"
 #include "source_watcher.hpp"
 #include "sources_panel.hpp"
 #include "state_store.hpp"
@@ -195,8 +199,8 @@ public:
         if (!tray_.create()) {
             throw std::runtime_error("Unable to create the notification-area icon.");
         }
-        initializeRouteStates();
         restartSourceWatcher();
+        initializeRouteStates();
         Fl::add_timeout(1.0, automaticWorkTimerCallback, this);
         spdlog::info("Application started in the notification area");
     }
@@ -267,14 +271,17 @@ private:
     SourcesPanel* sourcesPanel_{};
     DestinationsPanel* destinationsPanel_{};
     OverviewPanel* overviewPanel_{};
+    ProjectsPanel* projectsPanel_{};
     Fl_Button* overviewNavigationButton_{};
     Fl_Button* sourcesNavigationButton_{};
+    Fl_Button* projectsNavigationButton_{};
     Fl_Button* destinationsNavigationButton_{};
     Fl_Box* configurationSummary_{};
     Fl_Box* footerStatus_{};
     Fl_Button* runNowButton_{};
     BackupEngine backupEngine_;
     SourceWatcher sourceWatcher_;
+    std::vector<ConfiguredProjectsSource> projectsSources_;
     std::thread backupThread_;
     std::mutex backupResultMutex_;
     std::optional<BackupRunSummary> backupResult_;
@@ -282,6 +289,7 @@ private:
     bool isRunning_{true};
     bool hasPositionedWindow_{};
     std::chrono::steady_clock::time_point nextAutomaticAttempt_{};
+    std::chrono::steady_clock::time_point nextProjectsRescan_{};
 
     static void hideCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->hide();
@@ -301,6 +309,10 @@ private:
 
     static void destinationsNavigationCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->showDestinationsPage();
+    }
+
+    static void projectsNavigationCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->showProjectsPage();
     }
 
     static void runNowCallback(Fl_Widget*, void* data) {
@@ -361,6 +373,9 @@ private:
             } else if (index == 1) {
                 sourcesNavigationButton_ = button;
                 button->callback(sourcesNavigationCallback, this);
+            } else if (index == 2) {
+                projectsNavigationButton_ = button;
+                button->callback(projectsNavigationCallback, this);
             } else if (index == 3) {
                 destinationsNavigationButton_ = button;
                 button->callback(destinationsNavigationCallback, this);
@@ -382,8 +397,11 @@ private:
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
         destinationsPanel_ = new DestinationsPanel(
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
+        projectsPanel_ = new ProjectsPanel(
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
         overviewPanel_ = new OverviewPanel(panelX, panelY, panelWidth, panelHeight, config_, stateStore_);
         sourcesPanel_->hide();
+        projectsPanel_->hide();
         destinationsPanel_->hide();
 
         auto* footer = new Fl_Box(kSidebarWidth, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth,
@@ -421,10 +439,12 @@ private:
 
     void showSourcesPage() {
         overviewPanel_->hide();
+        projectsPanel_->hide();
         destinationsPanel_->hide();
         sourcesPanel_->show();
         styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         styleButton(*sourcesNavigationButton_, UiTheme::kCard, UiTheme::kText);
+        styleButton(*projectsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         window_->redraw();
     }
@@ -432,46 +452,98 @@ private:
     void showDestinationsPage() {
         overviewPanel_->hide();
         sourcesPanel_->hide();
+        projectsPanel_->hide();
         destinationsPanel_->refresh();
         destinationsPanel_->show();
         styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        styleButton(*projectsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         styleButton(*destinationsNavigationButton_, UiTheme::kCard, UiTheme::kText);
         window_->redraw();
     }
 
     void showOverviewPage() {
         sourcesPanel_->hide();
+        projectsPanel_->hide();
         destinationsPanel_->hide();
         overviewPanel_->refresh();
         overviewPanel_->show();
         styleButton(*overviewNavigationButton_, UiTheme::kCard, UiTheme::kText);
         styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        styleButton(*projectsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        window_->redraw();
+    }
+
+    void showProjectsPage() {
+        overviewPanel_->hide();
+        sourcesPanel_->hide();
+        destinationsPanel_->hide();
+        projectsPanel_->refresh();
+        projectsPanel_->show();
+        styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        styleButton(*projectsNavigationButton_, UiTheme::kCard, UiTheme::kText);
         styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
         window_->redraw();
     }
 
     void handleConfigChanged() {
         sourcesPanel_->refresh();
-        initializeRouteStates();
+        projectsPanel_->refresh();
         restartSourceWatcher();
+        initializeRouteStates();
         overviewPanel_->refresh();
         updateConfigurationSummary();
     }
 
     void initializeRouteStates() {
         for (const BackupRoute& route : config_.routes) {
-            if (!route.isMirrorEnabled || stateStore_.routeState(route.sourceId, route.destinationId).has_value()) {
+            if (!route.isMirrorEnabled) {
                 continue;
             }
-            stateStore_.markRouteDirty(route.sourceId, route.destinationId);
+            const bool isManualSource = std::ranges::any_of(config_.manualSources, [&](const ManualSource& source) {
+                return source.id == route.sourceId;
+            });
+            if (isManualSource) {
+                if (!stateStore_.routeState(route.sourceId, route.destinationId).has_value()) {
+                    stateStore_.markRouteDirty(route.sourceId, route.destinationId);
+                }
+                continue;
+            }
+            for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
+                if (projectsSource.rootId == route.sourceId &&
+                    !stateStore_.routeState(projectsSource.source.id, route.destinationId).has_value()) {
+                    stateStore_.markRouteDirty(projectsSource.source.id, route.destinationId);
+                }
+            }
         }
     }
 
     void restartSourceWatcher() {
-        sourceWatcher_.start(config_.manualSources, config_.settings.debounceSeconds, [this](const std::string& sourceId) {
+        ConfiguredProjectsDiscovery discovery = discoverConfiguredProjects(config_.projectsRoots);
+        projectsSources_ = std::move(discovery.sources);
+        std::vector<SourceWatchTarget> watchTargets;
+        watchTargets.reserve(config_.manualSources.size() + projectsSources_.size());
+        for (const ManualSource& source : config_.manualSources) {
+            SourceWatchTarget target;
+            target.sourceId = source.id;
+            target.directory = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
+            target.isRecursive = source.kind == ManualSourceKind::folder;
+            if (source.kind == ManualSourceKind::file) {
+                target.fileNameFilter = source.path.filename().native();
+            }
+            watchTargets.push_back(std::move(target));
+        }
+        for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
+            watchTargets.push_back(SourceWatchTarget{projectsSource.source.id, projectsSource.source.path,
+                                                     std::nullopt, true});
+        }
+        sourceWatcher_.start(watchTargets, config_.settings.debounceSeconds, [this](const std::string& sourceId) {
             Fl::awake(sourceChangedAwake, new SourceChangeNotification{this, sourceId});
         });
+        nextProjectsRescan_ = std::chrono::steady_clock::now() +
+                              std::chrono::minutes{config_.settings.projectsRescanMinutes};
         const std::string status = "Watching " + std::to_string(sourceWatcher_.watchedSourceCount()) +
                                    " Sources for changes.";
         footerStatus_->copy_label(status.c_str());
@@ -480,10 +552,16 @@ private:
     void markSourceDirty(const std::string& sourceId) {
         std::size_t markedCount = 0;
         for (const BackupRoute& route : config_.routes) {
-            if (route.sourceId != sourceId || !route.isMirrorEnabled) {
+            bool matchesSource = route.sourceId == sourceId;
+            if (!matchesSource) {
+                matchesSource = std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
+                    return source.source.id == sourceId && source.rootId == route.sourceId;
+                });
+            }
+            if (!matchesSource || !route.isMirrorEnabled) {
                 continue;
             }
-            stateStore_.markRouteDirty(route.sourceId, route.destinationId);
+            stateStore_.markRouteDirty(sourceId, route.destinationId);
             ++markedCount;
         }
         if (markedCount > 0) {
@@ -494,6 +572,11 @@ private:
     }
 
     void checkAutomaticWork() {
+        if (!isBackupRunning_ && std::chrono::steady_clock::now() >= nextProjectsRescan_) {
+            restartSourceWatcher();
+            initializeRouteStates();
+            overviewPanel_->refresh();
+        }
         if (isBackupRunning_ || std::chrono::steady_clock::now() < nextAutomaticAttempt_) {
             return;
         }

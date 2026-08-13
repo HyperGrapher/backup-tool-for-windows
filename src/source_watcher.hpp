@@ -6,11 +6,19 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include "backup_config.hpp"
+
+struct SourceWatchTarget {
+    std::string sourceId;
+    std::filesystem::path directory;
+    std::optional<std::wstring> fileNameFilter;
+    bool isRecursive{true};
+};
 
 class SourceWatcher final {
 public:
@@ -23,6 +31,7 @@ public:
     SourceWatcher& operator=(const SourceWatcher&) = delete;
 
     void start(const std::vector<ManualSource>& sources, int debounceSeconds, ChangeCallback callback);
+    void start(const std::vector<SourceWatchTarget>& targets, int debounceSeconds, ChangeCallback callback);
     void stop();
 
     [[nodiscard]] std::size_t watchedSourceCount() const noexcept;

@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include "backup_engine.hpp"
+#include "projects_scanner.hpp"
 #include "source_watcher.hpp"
 #include "state_store.hpp"
 
@@ -85,7 +86,8 @@ TEST_CASE("a watched change becomes a pending mirror and is reconciled") {
     REQUIRE(pendingState->isDirty);
 
     BackupEngine engine;
-    const BackupRunSummary summary = engine.runPendingMirrors(config, stateStore, directory.path() / "logs");
+    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
+    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, directory.path() / "logs");
     REQUIRE(summary.succeeded == 1);
     REQUIRE(summary.failed == 0);
 
@@ -100,4 +102,44 @@ TEST_CASE("a watched change becomes a pending mirror and is reconciled") {
     REQUIRE(completedState.has_value());
     REQUIRE_FALSE(completedState->isDirty);
     REQUIRE(completedState->status == RouteStatus::synced);
+}
+
+TEST_CASE("a Projects Root watch reacts to marker changes but ignores normal project files") {
+    WatcherTemporaryDirectory directory;
+    const std::filesystem::path project = directory.path() / "ExampleProject";
+    std::filesystem::create_directories(project);
+
+    std::mutex notificationMutex;
+    std::condition_variable notificationCondition;
+    bool wasNotified = false;
+
+    SourceWatchTarget target;
+    target.sourceId = "projects-root-watch:test";
+    target.directory = directory.path();
+    target.isRecursive = true;
+    target.isRelevantChange = isProjectsRootDiscoveryChange;
+
+    SourceWatcher watcher;
+    watcher.start({target}, 1, [&](const std::string&) {
+        {
+            const std::scoped_lock lock(notificationMutex);
+            wasNotified = true;
+        }
+        notificationCondition.notify_one();
+    });
+
+    writeText(project / "notes.txt", "This is a normal Project change.");
+    {
+        std::unique_lock lock(notificationMutex);
+        REQUIRE_FALSE(notificationCondition.wait_for(lock, std::chrono::milliseconds{1500}, [&] {
+            return wasNotified;
+        }));
+    }
+
+    writeText(project / ".backup-watch", "01234567-89ab-4def-8123-456789abcdef");
+    {
+        std::unique_lock lock(notificationMutex);
+        REQUIRE(notificationCondition.wait_for(lock, std::chrono::seconds{5}, [&] { return wasNotified; }));
+    }
+    watcher.stop();
 }

@@ -10,7 +10,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
 namespace {
@@ -31,8 +30,8 @@ constexpr DWORD kChangeFilter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANG
 struct SourceWatcher::Registration {
     std::string sourceId;
     std::filesystem::path directory;
-    std::optional<std::wstring> fileNameFilter;
     bool isRecursive{true};
+    SourceWatchTarget::ChangeFilter isRelevantChange;
     HANDLE handle{INVALID_HANDLE_VALUE};
     OVERLAPPED overlapped{};
     std::array<std::byte, 64 * 1024> buffer{};
@@ -45,18 +44,25 @@ SourceWatcher::~SourceWatcher() {
     stop();
 }
 
+SourceWatchTarget makeSourceWatchTarget(const ManualSource& source) {
+    SourceWatchTarget target;
+    target.sourceId = source.id;
+    target.directory = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
+    target.isRecursive = source.kind == ManualSourceKind::folder;
+    if (source.kind == ManualSourceKind::file) {
+        const std::wstring watchedFileName = lowercase(source.path.filename().native());
+        target.isRelevantChange = [watchedFileName](const std::filesystem::path& relativePath) {
+            return lowercase(relativePath.filename().native()) == watchedFileName;
+        };
+    }
+    return target;
+}
+
 void SourceWatcher::start(const std::vector<ManualSource>& sources, int debounceSeconds, ChangeCallback callback) {
     std::vector<SourceWatchTarget> targets;
     targets.reserve(sources.size());
     for (const ManualSource& source : sources) {
-        SourceWatchTarget target;
-        target.sourceId = source.id;
-        target.directory = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
-        target.isRecursive = source.kind == ManualSourceKind::folder;
-        if (source.kind == ManualSourceKind::file) {
-            target.fileNameFilter = source.path.filename().native();
-        }
-        targets.push_back(std::move(target));
+        targets.push_back(makeSourceWatchTarget(source));
     }
     start(targets, debounceSeconds, std::move(callback));
 }
@@ -81,9 +87,7 @@ void SourceWatcher::start(const std::vector<SourceWatchTarget>& targets, int deb
         registration->sourceId = target.sourceId;
         registration->directory = target.directory;
         registration->isRecursive = target.isRecursive;
-        if (target.fileNameFilter.has_value()) {
-            registration->fileNameFilter = lowercase(*target.fileNameFilter);
-        }
+        registration->isRelevantChange = target.isRelevantChange;
 
         registration->handle = CreateFileW(
             registration->directory.c_str(), FILE_LIST_DIRECTORY,
@@ -151,12 +155,17 @@ void SourceWatcher::watchLoop() {
 
         if (completed != FALSE && completionKey != 0 && overlapped != nullptr) {
             auto& registration = *reinterpret_cast<Registration*>(completionKey);
-            bool isRelevant = transferredBytes == 0 || !registration.fileNameFilter.has_value();
+            bool isRelevant = transferredBytes == 0;
             std::size_t offset = 0;
             while (!isRelevant && offset < transferredBytes) {
                 const auto* change = reinterpret_cast<const FILE_NOTIFY_INFORMATION*>(registration.buffer.data() + offset);
                 const std::wstring changedName(change->FileName, change->FileNameLength / sizeof(wchar_t));
-                isRelevant = lowercase(changedName) == *registration.fileNameFilter;
+                try {
+                    isRelevant = !registration.isRelevantChange ||
+                                 registration.isRelevantChange(std::filesystem::path{changedName});
+                } catch (...) {
+                    isRelevant = true;
+                }
                 if (change->NextEntryOffset == 0) {
                     break;
                 }

@@ -115,7 +115,6 @@ using Json = nlohmann::json;
 [[nodiscard]] Json toJson(const BackupSettings& settings) {
     return Json{
         {"debounceSeconds", settings.debounceSeconds},
-        {"projectsRescanMinutes", settings.projectsRescanMinutes},
         {"largeFileThresholdBytes", settings.largeFileThresholdBytes},
         {"projectSizeThresholdBytes", settings.projectSizeThresholdBytes},
     };
@@ -167,7 +166,6 @@ using Json = nlohmann::json;
 [[nodiscard]] BackupSettings settingsFromJson(const Json& json) {
     BackupSettings settings;
     settings.debounceSeconds = json.value("debounceSeconds", settings.debounceSeconds);
-    settings.projectsRescanMinutes = json.value("projectsRescanMinutes", settings.projectsRescanMinutes);
     settings.largeFileThresholdBytes = json.value("largeFileThresholdBytes", settings.largeFileThresholdBytes);
     settings.projectSizeThresholdBytes = json.value("projectSizeThresholdBytes", settings.projectSizeThresholdBytes);
     return settings;
@@ -220,8 +218,8 @@ void validateBackupConfig(const BackupConfig& config) {
     if (config.schemaVersion != 1) {
         throw std::invalid_argument("Unsupported backup configuration schema version.");
     }
-    if (config.settings.debounceSeconds <= 0 || config.settings.projectsRescanMinutes <= 0 ||
-        config.settings.largeFileThresholdBytes == 0 || config.settings.projectSizeThresholdBytes == 0) {
+    if (config.settings.debounceSeconds <= 0 || config.settings.largeFileThresholdBytes == 0 ||
+        config.settings.projectSizeThresholdBytes == 0) {
         throw std::invalid_argument("Backup setting values must be positive.");
     }
 

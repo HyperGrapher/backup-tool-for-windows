@@ -62,7 +62,6 @@ struct BackupRoute {
 
 struct BackupSettings {
     int debounceSeconds{8};
-    int projectsRescanMinutes{5};
     std::uint64_t largeFileThresholdBytes{50ULL * 1024ULL * 1024ULL};
     std::uint64_t projectSizeThresholdBytes{150ULL * 1024ULL * 1024ULL};
 

@@ -39,7 +39,7 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 │  ┌───────▼────────────────────────────────────────────┐  │
 │  │              Source Registry                        │  │
 │  │  - Manual sources (static, user-managed)             │  │
-│  │  - Project sources (dynamic, rescanned periodically) │  │
+│  │  - Project sources (dynamic, updated by folder events)│  │
 │  └───────┬───────────────────────────────────────────┘  │
 │          │                                                │
 │  ┌───────▼───────┐   ┌─────────────────┐                 │
@@ -128,8 +128,7 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
   "settings": {
     "debounceSeconds": 8,
     "snapshotIntervalHours": 24,
-    "snapshotRetentionDays": 30,
-    "projectsRescanMinutes": 5
+    "snapshotRetentionDays": 30
   }
 }
 ```

@@ -249,7 +249,8 @@ std::filesystem::path buildMirrorRelativePath(const std::filesystem::path& sourc
     throw std::runtime_error("Source must use an absolute drive or network path.");
 }
 
-std::vector<MirrorPlan> BackupEngine::previewMirrors(const BackupConfig& config) const {
+std::vector<MirrorPlan> BackupEngine::previewMirrors(
+    const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources) const {
     std::vector<MirrorPlan> plans;
     for (const BackupRoute& route : config.routes) {
         if (!route.isMirrorEnabled) {
@@ -278,14 +279,16 @@ std::vector<MirrorPlan> BackupEngine::previewMirrors(const BackupConfig& config)
             continue;
         }
 
-        const ProjectsRoot* root = findProjectsRoot(config, route.sourceId);
-        if (root == nullptr) {
+        if (findProjectsRoot(config, route.sourceId) == nullptr) {
             throw std::runtime_error("Route has an unavailable Source.");
         }
-        const ProjectsDiscovery discovery = discoverProjects(*root);
-        for (const ProjectsSource& source : discovery.sources) {
-            const ProjectContents contents = collectProjectContents(source);
-            if (contents.isGitRepository) {
+        for (const ConfiguredProjectsSource& configuredSource : projectsSources) {
+            if (configuredSource.rootId != route.sourceId) {
+                continue;
+            }
+            const ProjectsSource& source = configuredSource.source;
+            if (!std::filesystem::is_directory(source.path) ||
+                std::filesystem::exists(source.path / L".git")) {
                 continue;
             }
             const std::filesystem::path target = availableDestinationRoot / L"BackItUpTool" / L"Mirrors" /
@@ -301,6 +304,7 @@ std::vector<MirrorPlan> BackupEngine::previewMirrors(const BackupConfig& config)
 }
 
 std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& config,
+                                                            const std::vector<ConfiguredProjectsSource>& projectsSources,
                                                             const StateStore& stateStore) const {
     std::vector<MirrorPlan> pendingPlans;
     for (const BackupRoute& route : config.routes) {
@@ -310,7 +314,7 @@ std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& 
         BackupConfig singleRouteConfig = config;
         singleRouteConfig.routes = {route};
         try {
-            std::vector<MirrorPlan> routePlans = previewMirrors(singleRouteConfig);
+            std::vector<MirrorPlan> routePlans = previewMirrors(singleRouteConfig, projectsSources);
             for (MirrorPlan& plan : routePlans) {
                 const std::optional<RouteRuntimeState> state =
                     stateStore.routeState(plan.sourceId, plan.destinationId);
@@ -344,20 +348,8 @@ std::vector<SizeWarning> BackupEngine::findSizeWarnings(const BackupConfig& conf
     return warnings;
 }
 
-BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, StateStore& stateStore,
-                                          const std::filesystem::path& logDirectory) const {
-    const std::vector<MirrorPlan> plans = previewMirrors(config);
-    return runPlans(config, plans, stateStore, logDirectory);
-}
-
-BackupRunSummary BackupEngine::runPendingMirrors(const BackupConfig& config, StateStore& stateStore,
-                                                 const std::filesystem::path& logDirectory) const {
-    const std::vector<MirrorPlan> plans = previewPendingMirrors(config, stateStore);
-    return runPlans(config, plans, stateStore, logDirectory);
-}
-
-BackupRunSummary BackupEngine::runPlans(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
-                                        StateStore& stateStore, const std::filesystem::path& logDirectory) const {
+BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
+                                          StateStore& stateStore, const std::filesystem::path& logDirectory) const {
     std::filesystem::create_directories(logDirectory);
     BackupRunSummary summary;
     for (const MirrorPlan& plan : plans) {

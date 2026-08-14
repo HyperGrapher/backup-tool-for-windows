@@ -88,7 +88,7 @@ SizeApprovalResult SizeApprovalDialog::show() {
     if (!hasProjectWarning) {
         alwaysButton->deactivate();
     }
-    auto* skipButton = new Fl_Button(468, 355, 228, 42, "Skip for now");
+    auto* skipButton = new Fl_Button(468, 355, 228, 42, "Skip until it changes");
     styleButton(*skipButton, UiTheme::kCard);
     skipButton->callback(skipCallback, this);
     window.end();

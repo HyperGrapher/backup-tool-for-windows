@@ -42,12 +42,13 @@ TEST_CASE("pending work waits for a missing folder Destination and runs when it 
     stateStore.markRouteDirty("source-one", "destination-one");
     BackupEngine engine;
 
-    REQUIRE(engine.previewPendingMirrors(config, stateStore).empty());
+    REQUIRE(engine.previewPendingMirrors(config, {}, stateStore).empty());
     REQUIRE(stateStore.routeState("source-one", "destination-one")->isDirty);
 
     std::filesystem::create_directories(destination);
-    REQUIRE(engine.previewPendingMirrors(config, stateStore).size() == 1);
-    const BackupRunSummary summary = engine.runPendingMirrors(config, stateStore, testRoot / "logs");
+    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
+    REQUIRE(plans.size() == 1);
+    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, testRoot / "logs");
     REQUIRE(summary.succeeded == 1);
     REQUIRE_FALSE(stateStore.routeState("source-one", "destination-one")->isDirty);
 
@@ -75,7 +76,8 @@ TEST_CASE("a changed route creates a ZIP snapshot beside the readable source pat
     stateStore.markRouteDirty("source-one", "destination-one");
 
     BackupEngine engine;
-    const BackupRunSummary summary = engine.runPendingMirrors(config, stateStore, testRoot / "logs");
+    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
+    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, testRoot / "logs");
     REQUIRE(summary.succeeded == 1);
     const std::vector<SnapshotRecord> snapshots = stateStore.snapshotRecords("source-one", "destination-one");
     REQUIRE(snapshots.size() == 1);
@@ -116,9 +118,11 @@ TEST_CASE("a Projects Root mirrors only opted-in loose project files") {
     stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
 
     BackupEngine engine;
-    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, stateStore);
+    const std::vector<ConfiguredProjectsSource> projectsSources =
+        discoverConfiguredProjects(config.projectsRoots).sources;
+    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, projectsSources, stateStore);
     REQUIRE(plans.size() == 1);
-    const BackupRunSummary summary = engine.runPendingMirrors(config, stateStore, testRoot / "logs");
+    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, testRoot / "logs");
     REQUIRE(summary.succeeded == 1);
     REQUIRE(std::filesystem::exists(plans.front().destination / "notes.txt"));
     REQUIRE_FALSE(std::filesystem::exists(plans.front().destination / ".backup-watch"));
@@ -157,7 +161,9 @@ TEST_CASE("size warnings use only eligible Project content") {
     stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
 
     BackupEngine engine;
-    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, stateStore);
+    const std::vector<ConfiguredProjectsSource> projectsSources =
+        discoverConfiguredProjects(config.projectsRoots).sources;
+    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, projectsSources, stateStore);
     const std::vector<SizeWarning> warnings = engine.findSizeWarnings(config, plans, stateStore);
     REQUIRE(warnings.size() == 1);
     REQUIRE(warnings.front().isProject);
@@ -187,7 +193,7 @@ TEST_CASE("manual folder routes do not show the Project size warning") {
     stateStore.markRouteDirty("source-one", "destination-one");
 
     BackupEngine engine;
-    REQUIRE(engine.findSizeWarnings(config, engine.previewPendingMirrors(config, stateStore), stateStore).empty());
+    REQUIRE(engine.findSizeWarnings(config, engine.previewPendingMirrors(config, {}, stateStore), stateStore).empty());
 
     std::error_code cleanupError;
     std::filesystem::remove_all(testRoot, cleanupError);

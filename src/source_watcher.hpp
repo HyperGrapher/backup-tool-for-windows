@@ -6,7 +6,6 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -14,11 +13,15 @@
 #include "backup_config.hpp"
 
 struct SourceWatchTarget {
+    using ChangeFilter = std::function<bool(const std::filesystem::path& relativePath)>;
+
     std::string sourceId;
     std::filesystem::path directory;
-    std::optional<std::wstring> fileNameFilter;
     bool isRecursive{true};
+    ChangeFilter isRelevantChange;
 };
+
+[[nodiscard]] SourceWatchTarget makeSourceWatchTarget(const ManualSource& source);
 
 class SourceWatcher final {
 public:

@@ -229,6 +229,28 @@ ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<Project
     return combined;
 }
 
+bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath) {
+    auto component = relativePath.begin();
+    if (component == relativePath.end()) {
+        return false;
+    }
+
+    ++component;
+    if (component == relativePath.end()) {
+        return true;
+    }
+
+    std::wstring childName = component->native();
+    std::ranges::transform(childName, childName.begin(), [](wchar_t character) {
+        return static_cast<wchar_t>(std::towlower(character));
+    });
+    ++component;
+    if (component != relativePath.end()) {
+        return false;
+    }
+    return childName == L".backup-watch" || childName == L".git";
+}
+
 ProjectContents collectProjectContents(const ProjectsSource& source) {
     if (source.id.empty() || source.path.empty()) {
         throw std::invalid_argument("Projects Source must have an ID and path.");

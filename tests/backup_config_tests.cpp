@@ -49,7 +49,6 @@ TEST_CASE("backup configuration uses operational defaults when optional JSON fie
 
     REQUIRE(config.schemaVersion == 1);
     REQUIRE(config.settings.debounceSeconds == 8);
-    REQUIRE(config.settings.projectsRescanMinutes == 5);
     REQUIRE(config.settings.largeFileThresholdBytes == 50ULL * 1024ULL * 1024ULL);
     REQUIRE(config.settings.projectSizeThresholdBytes == 150ULL * 1024ULL * 1024ULL);
     REQUIRE(config.manualSources.empty());

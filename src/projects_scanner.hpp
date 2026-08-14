@@ -71,5 +71,6 @@ struct ProjectPreflight {
 
 [[nodiscard]] ProjectsDiscovery discoverProjects(const ProjectsRoot& root);
 [[nodiscard]] ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<ProjectsRoot>& roots);
+[[nodiscard]] bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath);
 [[nodiscard]] ProjectContents collectProjectContents(const ProjectsSource& source);
 [[nodiscard]] ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings);

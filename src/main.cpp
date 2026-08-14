@@ -19,7 +19,9 @@
 #include <stdexcept>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -54,6 +56,7 @@ constexpr UINT kTrayMessage = WM_APP + 1;
 constexpr UINT kShowApplicationMessage = WM_APP + 2;
 constexpr UINT kTrayOpenCommand = 1;
 constexpr UINT kTrayExitCommand = 2;
+constexpr std::string_view kProjectsRootWatchPrefix = "projects-root-watch:";
 
 constexpr int kWindowWidth = 900;
 constexpr int kWindowHeight = 620;
@@ -201,6 +204,18 @@ void styleButton(Fl_Button& button, Fl_Color color, Fl_Color labelColor = UiThem
     button.labelsize(12);
 }
 
+[[nodiscard]] std::string sizeWarningKey(std::string_view sourceId, std::string_view destinationId) {
+    return std::string{sourceId} + '\n' + std::string{destinationId};
+}
+
+[[nodiscard]] std::string projectsRootWatchId(std::string_view rootId) {
+    return std::string{kProjectsRootWatchPrefix} + std::string{rootId};
+}
+
+[[nodiscard]] bool isProjectsRootWatchId(std::string_view sourceId) {
+    return sourceId.starts_with(kProjectsRootWatchPrefix);
+}
+
 class App final {
 public:
     App()
@@ -295,14 +310,15 @@ private:
     BackupEngine backupEngine_;
     SourceWatcher sourceWatcher_;
     std::vector<ConfiguredProjectsSource> projectsSources_;
+    std::unordered_set<std::string> deferredSizeWarnings_;
     std::thread backupThread_;
     std::mutex backupResultMutex_;
     std::optional<BackupRunSummary> backupResult_;
     bool isBackupRunning_{};
     bool isRunning_{true};
     bool hasPositionedWindow_{};
+    bool isProjectsRefreshPending_{};
     std::chrono::steady_clock::time_point nextAutomaticAttempt_{};
-    std::chrono::steady_clock::time_point nextProjectsRescan_{};
 
     static void hideCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->hide();
@@ -338,7 +354,7 @@ private:
 
     static void sourceChangedAwake(void* data) {
         std::unique_ptr<SourceChangeNotification> notification{static_cast<SourceChangeNotification*>(data)};
-        notification->app->markSourceDirty(notification->sourceId);
+        notification->app->handleSourceChanged(notification->sourceId);
     }
 
     static void automaticWorkTimerCallback(void* data) {
@@ -502,6 +518,7 @@ private:
     }
 
     void handleConfigChanged() {
+        deferredSizeWarnings_.clear();
         sourcesPanel_->refresh();
         projectsPanel_->refresh();
         restartSourceWatcher();
@@ -534,35 +551,62 @@ private:
     }
 
     void restartSourceWatcher() {
+        sourceWatcher_.stop();
         ConfiguredProjectsDiscovery discovery = discoverConfiguredProjects(config_.projectsRoots);
         projectsSources_ = std::move(discovery.sources);
         std::vector<SourceWatchTarget> watchTargets;
-        watchTargets.reserve(config_.manualSources.size() + projectsSources_.size());
+        watchTargets.reserve(config_.manualSources.size() + config_.projectsRoots.size() + projectsSources_.size());
         for (const ManualSource& source : config_.manualSources) {
+            watchTargets.push_back(makeSourceWatchTarget(source));
+        }
+        for (const ProjectsRoot& root : config_.projectsRoots) {
             SourceWatchTarget target;
-            target.sourceId = source.id;
-            target.directory = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
-            target.isRecursive = source.kind == ManualSourceKind::folder;
-            if (source.kind == ManualSourceKind::file) {
-                target.fileNameFilter = source.path.filename().native();
-            }
+            target.sourceId = projectsRootWatchId(root.id);
+            target.directory = root.path;
+            target.isRecursive = true;
+            target.isRelevantChange = isProjectsRootDiscoveryChange;
             watchTargets.push_back(std::move(target));
         }
         for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
-            watchTargets.push_back(SourceWatchTarget{projectsSource.source.id, projectsSource.source.path,
-                                                     std::nullopt, true});
+            SourceWatchTarget target;
+            target.sourceId = projectsSource.source.id;
+            target.directory = projectsSource.source.path;
+            target.isRecursive = true;
+            watchTargets.push_back(std::move(target));
         }
         sourceWatcher_.start(watchTargets, config_.settings.debounceSeconds, [this](const std::string& sourceId) {
             Fl::awake(sourceChangedAwake, new SourceChangeNotification{this, sourceId});
         });
-        nextProjectsRescan_ = std::chrono::steady_clock::now() +
-                              std::chrono::minutes{config_.settings.projectsRescanMinutes};
         const std::string status = "Watching " + std::to_string(sourceWatcher_.watchedSourceCount()) +
-                                   " Sources for changes.";
+                                   " folders for changes.";
         footerStatus_->copy_label(status.c_str());
     }
 
+    void handleSourceChanged(const std::string& sourceId) {
+        if (!isProjectsRootWatchId(sourceId)) {
+            markSourceDirty(sourceId);
+            return;
+        }
+        if (isBackupRunning_) {
+            isProjectsRefreshPending_ = true;
+            return;
+        }
+        refreshProjectsFromRoots();
+    }
+
+    void refreshProjectsFromRoots() {
+        restartSourceWatcher();
+        initializeRouteStates();
+        projectsPanel_->refresh();
+        overviewPanel_->refresh();
+        nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+    }
+
     void markSourceDirty(const std::string& sourceId) {
+        const std::string deferredPrefix = sourceId + '\n';
+        std::erase_if(deferredSizeWarnings_, [&](const std::string& key) {
+            return key.starts_with(deferredPrefix);
+        });
         std::size_t markedCount = 0;
         for (const BackupRoute& route : config_.routes) {
             bool matchesSource = route.sourceId == sourceId;
@@ -585,17 +629,16 @@ private:
     }
 
     void checkAutomaticWork() {
-        if (!isBackupRunning_ && std::chrono::steady_clock::now() >= nextProjectsRescan_) {
-            restartSourceWatcher();
-            initializeRouteStates();
-            overviewPanel_->refresh();
-        }
         if (isBackupRunning_ || std::chrono::steady_clock::now() < nextAutomaticAttempt_) {
             return;
         }
-        const std::vector<MirrorPlan> pendingPlans = backupEngine_.previewPendingMirrors(config_, stateStore_);
-        if (pendingPlans.empty()) {
-            nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        const bool hasActionablePendingWork = std::ranges::any_of(
+            stateStore_.routeStates(), [&](const RouteRuntimeState& state) {
+                return state.isDirty && !deferredSizeWarnings_.contains(
+                                            sizeWarningKey(state.sourceId, state.destinationId));
+            });
+        if (!hasActionablePendingWork) {
+            nextAutomaticAttempt_ = std::chrono::steady_clock::time_point::max();
             return;
         }
         startMirrorRun(true);
@@ -606,28 +649,58 @@ private:
             return;
         }
         try {
-            const std::vector<MirrorPlan> plans = pendingOnly ? backupEngine_.previewPendingMirrors(config_, stateStore_)
-                                                               : backupEngine_.previewMirrors(config_);
+            if (!pendingOnly) {
+                deferredSizeWarnings_.clear();
+            }
+            std::vector<MirrorPlan> plans =
+                pendingOnly ? backupEngine_.previewPendingMirrors(config_, projectsSources_, stateStore_)
+                            : backupEngine_.previewMirrors(config_, projectsSources_);
             if (plans.empty()) {
-                footerStatus_->copy_label("No Mirror routes are configured.");
+                if (pendingOnly) {
+                    footerStatus_->copy_label("Backup is pending. Waiting for a Source or Destination.");
+                    nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+                } else {
+                    footerStatus_->copy_label("No available Mirror routes are configured.");
+                }
                 return;
             }
             const std::vector<SizeWarning> sizeWarnings = backupEngine_.findSizeWarnings(config_, plans, stateStore_);
-            if (!sizeWarnings.empty()) {
-                SizeApprovalDialog dialog{sizeWarnings};
+            std::unordered_set<std::string> blockedPlanKeys;
+            std::vector<SizeWarning> warningsForApproval;
+            for (const SizeWarning& warning : sizeWarnings) {
+                const std::string key = sizeWarningKey(warning.sourceId, warning.destinationId);
+                if (deferredSizeWarnings_.contains(key)) {
+                    blockedPlanKeys.insert(key);
+                } else {
+                    warningsForApproval.push_back(warning);
+                }
+            }
+            if (!warningsForApproval.empty()) {
+                SizeApprovalDialog dialog{warningsForApproval};
                 const SizeApprovalResult decision = dialog.show();
                 if (decision == SizeApprovalResult::skip) {
-                    footerStatus_->copy_label("Large items skipped. They remain pending.");
-                    nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::minutes{5};
-                    return;
+                    for (const SizeWarning& warning : warningsForApproval) {
+                        const std::string key = sizeWarningKey(warning.sourceId, warning.destinationId);
+                        deferredSizeWarnings_.insert(key);
+                        blockedPlanKeys.insert(key);
+                    }
                 }
                 if (decision == SizeApprovalResult::approveProjectsAlways) {
-                    for (const SizeWarning& warning : sizeWarnings) {
+                    for (const SizeWarning& warning : warningsForApproval) {
                         if (warning.isProject) {
                             stateStore_.setPermanentSizeApproval(warning.sourceId, utcNowForApproval());
                         }
                     }
                 }
+            }
+            std::erase_if(plans, [&](const MirrorPlan& plan) {
+                return blockedPlanKeys.contains(sizeWarningKey(plan.sourceId, plan.destinationId));
+            });
+            if (plans.empty()) {
+                footerStatus_->copy_label(
+                    "Large items skipped. You will be asked again only after the Project changes or Run now is used.");
+                nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+                return;
             }
             if (backupThread_.joinable()) {
                 backupThread_.join();
@@ -637,12 +710,10 @@ private:
             const std::string status = "Mirroring " + std::to_string(plans.size()) + " configured Sources...";
             footerStatus_->copy_label(status.c_str());
             const BackupConfig configSnapshot = config_;
-            backupThread_ = std::thread([this, pendingOnly, configSnapshot] {
+            backupThread_ = std::thread([this, configSnapshot, plans = std::move(plans)] {
                 BackupRunSummary result;
                 try {
-                    result = pendingOnly
-                                 ? backupEngine_.runPendingMirrors(configSnapshot, stateStore_, dataDirectory_ / L"logs")
-                                 : backupEngine_.runMirrors(configSnapshot, stateStore_, dataDirectory_ / L"logs");
+                    result = backupEngine_.runMirrors(configSnapshot, plans, stateStore_, dataDirectory_ / L"logs");
                 } catch (const std::exception& error) {
                     result.failed = 1;
                     result.messages.push_back(error.what());
@@ -671,6 +742,10 @@ private:
         }
         isBackupRunning_ = false;
         runNowButton_->activate();
+        if (isProjectsRefreshPending_) {
+            isProjectsRefreshPending_ = false;
+            refreshProjectsFromRoots();
+        }
         const std::string status = "Mirror finished: " + std::to_string(result.succeeded) + " succeeded, " +
                                    std::to_string(result.failed) + " failed.";
         footerStatus_->copy_label(status.c_str());

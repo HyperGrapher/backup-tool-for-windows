@@ -226,7 +226,6 @@ public:
         : Fl_Button(x, y, width, height, label), icon_(icon) {
         box(FL_NO_BOX);
         down_box(FL_NO_BOX);
-        clear_visible_focus();
     }
 
     void setSelected(bool isSelected) {
@@ -270,6 +269,10 @@ public:
         fl_color(isSelected_ ? UiTheme::kText : UiTheme::kSecondaryText);
         fl_font(isSelected_ ? UiTheme::kUiFontSemibold : UiTheme::kUiFont, 12);
         fl_draw(label(), x() + 42, y(), w() - 50, h(), FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+        if (Fl::focus() == this) {
+            fl_color(UiTheme::kSecondaryText);
+            fl_rect(x() + 4, y() + 3, w() - 8, h() - 6);
+        }
     }
 
 private:
@@ -433,12 +436,12 @@ private:
     ProjectsPanel* projectsPanel_{};
     ActivityPanel* activityPanel_{};
     SettingsPanel* settingsPanel_{};
-    Fl_Button* overviewNavigationButton_{};
-    Fl_Button* sourcesNavigationButton_{};
-    Fl_Button* projectsNavigationButton_{};
-    Fl_Button* destinationsNavigationButton_{};
-    Fl_Button* activityNavigationButton_{};
-    Fl_Button* settingsNavigationButton_{};
+    NavigationButton* overviewNavigationButton_{};
+    NavigationButton* sourcesNavigationButton_{};
+    NavigationButton* projectsNavigationButton_{};
+    NavigationButton* destinationsNavigationButton_{};
+    NavigationButton* activityNavigationButton_{};
+    NavigationButton* settingsNavigationButton_{};
     Fl_Box* globalStatus_{};
     Fl_Box* configurationSummary_{};
     Fl_Box* footerStatus_{};
@@ -575,11 +578,14 @@ private:
 
         constexpr const char* navigationLabels[] = {
             "Backup status", "Sources", "Projects", "Destinations", "Activity", "Settings"};
+        constexpr NavigationIcon navigationIcons[] = {
+            NavigationIcon::status, NavigationIcon::source, NavigationIcon::project,
+            NavigationIcon::destination, NavigationIcon::activity, NavigationIcon::settings};
         for (std::size_t index = 0; index < std::size(navigationLabels); ++index) {
             const int buttonY = kTopBarHeight + 12 + static_cast<int>(index) * 36;
-            auto* button = new Fl_Button(10, buttonY, kSidebarWidth - 20, 30, navigationLabels[index]);
-            styleButton(*button, index == 0);
-            button->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+            auto* button = new NavigationButton(8, buttonY, kSidebarWidth - 16, 30,
+                                                navigationLabels[index], navigationIcons[index]);
+            button->setSelected(index == 0);
             if (index == 0) {
                 overviewNavigationButton_ = button;
                 button->callback(overviewNavigationCallback, this);
@@ -699,18 +705,18 @@ private:
         showPanel(settingsPanel_, settingsNavigationButton_);
     }
 
-    void showPanel(Fl_Group* selectedPanel, Fl_Button* selectedNavigationButton) {
+    void showPanel(Fl_Group* selectedPanel, NavigationButton* selectedNavigationButton) {
         constexpr std::size_t kPageCount = 6;
         Fl_Group* panels[kPageCount] = {
             overviewPanel_, sourcesPanel_, projectsPanel_, destinationsPanel_, activityPanel_, settingsPanel_};
-        Fl_Button* navigationButtons[kPageCount] = {
+        NavigationButton* navigationButtons[kPageCount] = {
             overviewNavigationButton_, sourcesNavigationButton_, projectsNavigationButton_,
             destinationsNavigationButton_, activityNavigationButton_, settingsNavigationButton_};
         for (Fl_Group* panel : panels) {
             panel->hide();
         }
-        for (Fl_Button* button : navigationButtons) {
-            styleButton(*button, button == selectedNavigationButton);
+        for (NavigationButton* button : navigationButtons) {
+            button->setSelected(button == selectedNavigationButton);
         }
         selectedPanel->show();
         window_->redraw();

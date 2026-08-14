@@ -4,7 +4,7 @@ A lightweight Windows tray application for configuring and running personal file
 
 ## Included
 
-- Resizable FLTK application window with a sidebar for the main sections.
+- Resizable dark-only FLTK window with flat controls and an icon sidebar for Backup status, Sources, Projects, Destinations, Activity, and Settings.
 - Working Manual Sources page with search, bulk removal, and native Windows pickers that can add many files or many folders at once.
 - Working Destinations page that detects connected removable drives, tracks them by volume serial number, shows availability and free space, and also accepts folder destinations.
 - Manual Sources can be connected to or disconnected from a selected Destination in bulk; new routes enable Mirror and Snapshots by default.
@@ -14,7 +14,9 @@ A lightweight Windows tray application for configuring and running personal file
 - Project backups exclude `.git` repositories, `build`, `node_modules`, junctions, `.backup-watch`, `.backup-ignore`, and paths matched by `.backup-ignore`. Hidden loose files remain included.
 - Before a Project backup, an always-on-top approval window lists any eligible file over 50 MiB or Project total over 150 MiB. You can approve once, permanently allow that Project, or skip it. A skipped Project stays pending without asking again until that Project changes or you select `Run now`.
 - Each changed Source also receives a ZIP Snapshot after its Mirror succeeds. Snapshots are stored below `<destination>\BackItUpTool\Snapshots` using the original readable path, then kept daily for 30 days and monthly for 12 months by default.
-- The Overview page shows Destination availability, pending Mirrors, the most recent successful Mirror and Snapshot, automatic-watching status, and recent failures.
+- The Backup status page shows Destination availability, pending Mirrors, the most recent successful Mirror and Snapshot, automatic-watching status, and recent failures.
+- The Activity page shows recent backup work and errors. Settings can change the watcher settle delay and large-Project warning limits without editing `config.json` by hand.
+- The always-visible status bar provides `Run now` and Pause for 1, 3, or 5 hours. Routine success stays quiet; failures and unavailable Destinations remain visible.
 - Tray icon with left-click Open and right-click Open/Exit actions.
 - Tray-only startup and hide-on-close behavior.
 - Low-CPU message loop that continues to dispatch tray events while the FLTK window is hidden.

@@ -16,7 +16,7 @@
 namespace {
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = FL_HELVETICA) {
+                 Fl_Font font = UiTheme::kUiFont) {
     auto* label = new Fl_Box(x, y, width, height, text);
     label->box(FL_NO_BOX);
     label->labelsize(size);
@@ -26,12 +26,13 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     return label;
 }
 
-Fl_Box* addStatusCard(int x, int y, int width, int height, const char* title) {
-    auto* card = new Fl_Box(x, y, width, height);
-    card->box(FL_BORDER_BOX);
-    card->color(UiTheme::kCard);
-    addLabel(x + 14, y + 10, width - 28, 20, title, 10, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    return addLabel(x + 14, y + 34, width - 28, height - 42, "", 16, UiTheme::kText, FL_HELVETICA_BOLD);
+Fl_Box* addStatusRow(int x, int y, int width, const char* title) {
+    addLabel(x, y, 180, 34, title, 12, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    Fl_Box* value = addLabel(x + 180, y, width - 180, 34, "", 12, UiTheme::kText);
+    auto* divider = new Fl_Box(x, y + 33, width, 1);
+    divider->box(FL_FLAT_BOX);
+    divider->color(UiTheme::kBorder);
+    return value;
 }
 
 [[nodiscard]] bool isDestinationAvailable(const Destination& destination,
@@ -53,22 +54,36 @@ OverviewPanel::OverviewPanel(int x, int y, int width, int height, const BackupCo
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 20, y + 14, 240, 32, "Overview", 22, UiTheme::kText, FL_HELVETICA_BOLD);
-    const int smallCardWidth = (width - 80) / 3;
-    destinationHealth_ = addStatusCard(x + 20, y + 60, smallCardWidth, 88, "DESTINATIONS");
-    pendingRoutes_ = addStatusCard(x + 30 + smallCardWidth, y + 60, smallCardWidth, 88, "PENDING MIRRORS");
-    watcherStatus_ = addStatusCard(x + 40 + smallCardWidth * 2, y + 60, smallCardWidth, 88, "AUTOMATIC WATCHING");
-    const int wideCardWidth = (width - 70) / 2;
-    lastMirror_ = addStatusCard(x + 20, y + 158, wideCardWidth, 88, "LAST SUCCESSFUL MIRROR");
-    lastSnapshot_ = addStatusCard(x + 30 + wideCardWidth, y + 158, wideCardWidth, 88, "LAST SNAPSHOT");
+    addLabel(x + 16, y + 10, width - 32, 28, "Backup status", 18, UiTheme::kText,
+             UiTheme::kUiFontSemibold);
+    addLabel(x + 16, y + 36, width - 32, 22,
+             "What is protected, what is waiting, and what needs attention.", 11, UiTheme::kSecondaryText);
 
-    addLabel(x + 20, y + 268, width - 40, 24, "Recent failures", 13, UiTheme::kText, FL_HELVETICA_BOLD);
-    recentFailures_ = new Fl_Browser(x + 20, y + 298, width - 40, height - 348);
+    const int rowX = x + 16;
+    const int rowWidth = width - 32;
+    destinationHealth_ = addStatusRow(rowX, y + 68, rowWidth, "Destinations");
+    pendingRoutes_ = addStatusRow(rowX, y + 102, rowWidth, "Pending changes");
+    watcherStatus_ = addStatusRow(rowX, y + 136, rowWidth, "Watching");
+    lastMirror_ = addStatusRow(rowX, y + 170, rowWidth, "Last successful Mirror");
+    lastSnapshot_ = addStatusRow(rowX, y + 204, rowWidth, "Last Snapshot");
+
+    addLabel(x + 16, y + 252, width - 32, 24, "Failures requiring attention", 13, UiTheme::kText,
+             UiTheme::kUiFontSemibold);
+    addLabel(x + 20, y + 278, 150, 22, "Time", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    addLabel(x + 170, y + 278, width - 190, 22, "Details", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    recentFailures_ = new Fl_Browser(x + 16, y + 300, width - 32, height - 316);
     recentFailures_->box(FL_BORDER_BOX);
-    recentFailures_->color(UiTheme::kCard);
+    recentFailures_->color(UiTheme::kSurface);
     recentFailures_->textcolor(UiTheme::kText);
     recentFailures_->selection_color(UiTheme::kSelection);
     recentFailures_->textsize(11);
+    recentFailures_->textfont(UiTheme::kMonoFont);
+    static constexpr int kFailureColumnWidths[] = {150, 0};
+    recentFailures_->column_widths(kFailureColumnWidths);
+    recentFailures_->column_char('\t');
+    recentFailures_->format_char(0);
 
     end();
     resizable(recentFailures_);
@@ -88,6 +103,9 @@ void OverviewPanel::refresh() {
     const std::string destinationText = std::to_string(availableCount) + " of " +
                                         std::to_string(config_.destinations.size()) + " available";
     destinationHealth_->copy_label(destinationText.c_str());
+    destinationHealth_->labelcolor(availableCount == static_cast<std::ptrdiff_t>(config_.destinations.size())
+                                       ? UiTheme::kSafe
+                                       : UiTheme::kError);
 
     const std::vector<RouteRuntimeState> states = stateStore_.routeStates();
     const ConfiguredProjectsDiscovery projects = discoverConfiguredProjects(config_.projectsRoots);
@@ -106,8 +124,10 @@ void OverviewPanel::refresh() {
             });
         });
     });
-    const std::string pendingText = std::to_string(pendingCount);
+    const std::string pendingText = pendingCount == 0 ? "●—● Current" :
+                                                        "●  ○ " + std::to_string(pendingCount) + " waiting";
     pendingRoutes_->copy_label(pendingText.c_str());
+    pendingRoutes_->labelcolor(pendingCount == 0 ? UiTheme::kSafe : UiTheme::kPending);
 
     std::optional<std::string> latestSuccess;
     for (const RouteRuntimeState& state : states) {
@@ -116,17 +136,20 @@ void OverviewPanel::refresh() {
         }
     }
     lastMirror_->copy_label(latestSuccess.has_value() ? latestSuccess->c_str() : "Not run yet");
+    lastMirror_->labelfont(UiTheme::kMonoFont);
     const std::optional<std::string> latestSnapshot = stateStore_.latestSnapshotUtc();
     lastSnapshot_->copy_label(latestSnapshot.has_value() ? latestSnapshot->c_str() : "Not created yet");
+    lastSnapshot_->labelfont(UiTheme::kMonoFont);
 
     const std::size_t watchedSourceCount = config_.manualSources.size() + projects.sources.size();
     const std::string watcherText = std::to_string(watchedSourceCount) + " Sources configured";
     watcherStatus_->copy_label(watcherText.c_str());
+    watcherStatus_->labelcolor(UiTheme::kSafe);
 
     recentFailures_->clear();
     for (const ActivityRecord& record : stateStore_.recentActivity(50)) {
         if (record.severity == "error") {
-            const std::string line = record.occurredUtc + "   " + record.message;
+            const std::string line = record.occurredUtc + '\t' + record.message;
             recentFailures_->add(line.c_str());
         }
     }

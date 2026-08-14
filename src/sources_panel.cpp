@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -20,11 +21,12 @@
 
 #include "config_store.hpp"
 #include "native_file_dialog.hpp"
+#include "state_store.hpp"
 #include "ui_theme.hpp"
 
 namespace {
 
-constexpr int kSourceColumnWidths[] = {86, 430, 105, 0};
+constexpr int kSourceColumnWidths[] = {128, 70, 480, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -56,16 +58,18 @@ constexpr int kSourceColumnWidths[] = {86, 430, 105, 0};
 }
 
 void styleButton(Fl_Button& button, bool isPrimary = false) {
-    button.box(FL_BORDER_BOX);
-    button.down_box(FL_BORDER_BOX);
-    button.color(isPrimary ? UiTheme::kPrimary : UiTheme::kCard);
+    button.box(FL_FLAT_BOX);
+    button.down_box(FL_FLAT_BOX);
+    button.color(UiTheme::kControl);
+    button.down_color(UiTheme::kPressedControl);
     button.selection_color(UiTheme::kSelection);
-    button.labelcolor(isPrimary ? UiTheme::kPrimaryText : UiTheme::kText);
+    button.labelcolor(UiTheme::kText);
+    button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = FL_HELVETICA) {
+                 Fl_Font font = UiTheme::kUiFont) {
     auto* label = new Fl_Box(x, y, width, height, text);
     label->box(FL_NO_BOX);
     label->labelsize(size);
@@ -75,75 +79,106 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     return label;
 }
 
+[[nodiscard]] UiTheme::BackupStatus sourceStatus(const ManualSource& source, const BackupConfig& config,
+                                                  const StateStore& stateStore) {
+    bool hasRoute = false;
+    UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
+    for (const BackupRoute& route : config.routes) {
+        if (route.sourceId != source.id || !route.isMirrorEnabled) {
+            continue;
+        }
+        hasRoute = true;
+        const std::optional<RouteRuntimeState> state = stateStore.routeState(source.id, route.destinationId);
+        if (!state.has_value() || state->isDirty) {
+            status = UiTheme::BackupStatus::waiting;
+        }
+        if (state.has_value() && state->status == RouteStatus::running) {
+            status = UiTheme::BackupStatus::syncing;
+        }
+        if (state.has_value() && state->status == RouteStatus::error) {
+            return UiTheme::BackupStatus::error;
+        }
+    }
+    return hasRoute ? status : UiTheme::BackupStatus::inactive;
+}
+
 }  // namespace
 
 SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& config, const ConfigStore& configStore,
-                           std::function<void()> configChangedCallback)
+                           const StateStore& stateStore, std::function<void()> configChangedCallback)
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
-      configChangedCallback_(std::move(configChangedCallback)) {
+      stateStore_(stateStore), configChangedCallback_(std::move(configChangedCallback)) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 20, y + 14, 200, 32, "Manual Sources", 22, UiTheme::kText, FL_HELVETICA_BOLD);
-    addLabel(x + width - 300, y + 16, 52, 28, "Search", 11, UiTheme::kMutedText);
-    searchInput_ = new Fl_Input(x + width - 245, y + 16, 225, 28);
+    addLabel(x + 16, y + 10, 180, 28, "Sources", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
+    addLabel(x + width - 292, y + 12, 52, 28, "Search", 11, UiTheme::kSecondaryText);
+    searchInput_ = new Fl_Input(x + width - 238, y + 12, 222, 28);
     searchInput_->box(FL_BORDER_BOX);
-    searchInput_->color(UiTheme::kCard);
+    searchInput_->color(UiTheme::kSurface);
     searchInput_->textcolor(UiTheme::kText);
     searchInput_->cursor_color(UiTheme::kText);
     searchInput_->selection_color(UiTheme::kSelection);
+    searchInput_->textfont(UiTheme::kUiFont);
+    searchInput_->textsize(12);
     searchInput_->when(FL_WHEN_CHANGED);
     searchInput_->callback(searchCallback, this);
 
-    auto* addFilesButton = new Fl_Button(x + 20, y + 60, 120, 34, "Add files");
+    auto* addFilesButton = new Fl_Button(x + 16, y + 50, 105, 30, "Add files");
     styleButton(*addFilesButton, true);
     addFilesButton->callback(addFilesCallback, this);
 
-    auto* addFoldersButton = new Fl_Button(x + 150, y + 60, 120, 34, "Add folders");
+    auto* addFoldersButton = new Fl_Button(x + 129, y + 50, 110, 30, "Add folders");
     styleButton(*addFoldersButton);
     addFoldersButton->callback(addFoldersCallback, this);
 
-    removeButton_ = new Fl_Button(x + 280, y + 60, 145, 34, "Remove selected");
+    removeButton_ = new Fl_Button(x + 247, y + 50, 132, 30, "Remove selected");
     styleButton(*removeButton_);
     removeButton_->callback(removeCallback, this);
     removeButton_->deactivate();
 
-    addLabel(x + 20, y + 105, 78, 34, "Send to", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    destinationChoice_ = new Fl_Choice(x + 88, y + 105, 210, 34);
+    addLabel(x + 16, y + 88, 60, 30, "Back up to", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    destinationChoice_ = new Fl_Choice(x + 82, y + 88, 230, 30);
     destinationChoice_->box(FL_BORDER_BOX);
-    destinationChoice_->color(UiTheme::kCard);
+    destinationChoice_->color(UiTheme::kSurface);
     destinationChoice_->textcolor(UiTheme::kText);
     destinationChoice_->selection_color(UiTheme::kSelection);
+    destinationChoice_->textfont(UiTheme::kUiFont);
+    destinationChoice_->textsize(12);
     destinationChoice_->callback(destinationChoiceCallback, this);
 
-    connectButton_ = new Fl_Button(x + 308, y + 105, 150, 34, "Connect selected");
+    connectButton_ = new Fl_Button(x + 320, y + 88, 138, 30, "Connect selected");
     styleButton(*connectButton_, true);
     connectButton_->callback(connectCallback, this);
     connectButton_->deactivate();
 
-    disconnectButton_ = new Fl_Button(x + 468, y + 105, 170, 34, "Disconnect selected");
+    disconnectButton_ = new Fl_Button(x + 466, y + 88, 150, 30, "Disconnect selected");
     styleButton(*disconnectButton_);
     disconnectButton_->callback(disconnectCallback, this);
     disconnectButton_->deactivate();
 
-    addLabel(x + 24, y + 150, 78, 24, "Type", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    addLabel(x + 110, y + 150, 420, 24, "Path", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    addLabel(x + 540, y + 150, 110, 24, "Destinations", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
+    addLabel(x + 20, y + 128, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 148, y + 128, 66, 22, "Type", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 218, y + 128, 470, 22, "Path", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 698, y + 128, 100, 22, "Destinations", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
 
-    sourceBrowser_ = new Fl_Multi_Browser(x + 20, y + 175, width - 40, height - 225);
+    sourceBrowser_ = new Fl_Multi_Browser(x + 16, y + 150, width - 32, height - 182);
     sourceBrowser_->box(FL_BORDER_BOX);
-    sourceBrowser_->color(UiTheme::kCard);
+    sourceBrowser_->color(UiTheme::kSurface);
     sourceBrowser_->textcolor(UiTheme::kText);
     sourceBrowser_->selection_color(UiTheme::kSelection);
     sourceBrowser_->textsize(12);
+    sourceBrowser_->textfont(UiTheme::kUiFont);
     sourceBrowser_->column_widths(kSourceColumnWidths);
     sourceBrowser_->column_char('\t');
     sourceBrowser_->format_char(0);
     sourceBrowser_->callback(selectionCallback, this);
     sourceBrowser_->when(FL_WHEN_CHANGED);
 
-    resultSummary_ = addLabel(x + 20, y + height - 42, width - 40, 24, "", 11, UiTheme::kMutedText);
+    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
 
     end();
     resizable(sourceBrowser_);
@@ -168,7 +203,8 @@ void SourcesPanel::refresh() {
         const auto routeCount = std::count_if(config_.routes.begin(), config_.routes.end(), [&](const BackupRoute& route) {
             return route.sourceId == source.id;
         });
-        const std::string line = typeText + '\t' + pathText + '\t' + std::to_string(routeCount);
+        const std::string line = std::string{UiTheme::statusText(sourceStatus(source, config_, stateStore_))} + '\t' +
+                                 typeText + '\t' + pathText + '\t' + std::to_string(routeCount);
         sourceBrowser_->add(line.c_str());
         visibleSourceIndexes_.push_back(index);
     }

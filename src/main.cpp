@@ -1,7 +1,6 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commctrl.h>
-#include <dwmapi.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
@@ -19,13 +18,9 @@
 #include <stdexcept>
 #include <sstream>
 #include <string>
-<<<<<<< HEAD
 #include <string_view>
 #include <thread>
 #include <unordered_set>
-=======
-#include <thread>
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 #include <utility>
 #include <vector>
 
@@ -33,22 +28,28 @@
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
 #include <FL/Fl_Double_Window.H>
+#include <FL/Fl_Group.H>
+#include <FL/Fl_Menu_Button.H>
 #include <FL/fl_ask.H>
+#include <FL/fl_draw.H>
 #include <FL/platform.H>
 #include <spdlog/sinks/rotating_file_sink.h>
 #include <spdlog/spdlog.h>
 
+#include "activity_panel.hpp"
 #include "config_store.hpp"
 #include "backup_engine.hpp"
 #include "destinations_panel.hpp"
 #include "overview_panel.hpp"
 #include "projects_panel.hpp"
 #include "projects_scanner.hpp"
+#include "settings_panel.hpp"
 #include "source_watcher.hpp"
 #include "size_approval_dialog.hpp"
 #include "sources_panel.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
+#include "window_theme.hpp"
 
 namespace {
 
@@ -62,11 +63,11 @@ constexpr UINT kTrayOpenCommand = 1;
 constexpr UINT kTrayExitCommand = 2;
 constexpr std::string_view kProjectsRootWatchPrefix = "projects-root-watch:";
 
-constexpr int kWindowWidth = 900;
-constexpr int kWindowHeight = 620;
-constexpr int kTopBarHeight = 64;
-constexpr int kSidebarWidth = 170;
-constexpr int kFooterHeight = 38;
+constexpr int kWindowWidth = 1040;
+constexpr int kWindowHeight = 680;
+constexpr int kTopBarHeight = 52;
+constexpr int kSidebarWidth = 156;
+constexpr int kFooterHeight = 26;
 
 class TrayIcon final {
 public:
@@ -189,7 +190,7 @@ void configureLogging(const std::filesystem::path& dataDirectory) {
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = FL_HELVETICA) {
+                 Fl_Font font = UiTheme::kUiFont) {
     auto* label = new Fl_Box(x, y, width, height, text);
     label->box(FL_NO_BOX);
     label->labelsize(size);
@@ -199,14 +200,140 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     return label;
 }
 
-void styleButton(Fl_Button& button, Fl_Color color, Fl_Color labelColor = UiTheme::kText) {
-    button.box(FL_BORDER_BOX);
-    button.down_box(FL_BORDER_BOX);
-    button.color(color);
+void styleButton(Fl_Button& button, bool isSelected = false, bool isStrong = false) {
+    button.box(FL_FLAT_BOX);
+    button.down_box(FL_FLAT_BOX);
+    button.color(isSelected ? UiTheme::kSelection : UiTheme::kControl);
+    button.down_color(UiTheme::kPressedControl);
     button.selection_color(UiTheme::kSelection);
-    button.labelcolor(labelColor);
+    button.labelcolor(UiTheme::kText);
+    button.labelfont(isSelected || isStrong ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
 }
+
+enum class NavigationIcon {
+    status,
+    source,
+    project,
+    destination,
+    activity,
+    settings,
+};
+
+class NavigationButton final : public Fl_Button {
+public:
+    NavigationButton(int x, int y, int width, int height, const char* label, NavigationIcon icon)
+        : Fl_Button(x, y, width, height, label), icon_(icon) {
+        box(FL_NO_BOX);
+        down_box(FL_NO_BOX);
+        clear_visible_focus();
+    }
+
+    void setSelected(bool isSelected) {
+        isSelected_ = isSelected;
+        redraw();
+    }
+
+    int handle(int event) override {
+        if (event == FL_ENTER) {
+            isHovered_ = true;
+            redraw();
+            return 1;
+        }
+        if (event == FL_LEAVE) {
+            isHovered_ = false;
+            redraw();
+            return 1;
+        }
+        return Fl_Button::handle(event);
+    }
+
+    void draw() override {
+        Fl_Color background = UiTheme::kNavigation;
+        if (value() != 0) {
+            background = UiTheme::kPressedControl;
+        } else if (isSelected_) {
+            background = UiTheme::kSelection;
+        } else if (isHovered_) {
+            background = UiTheme::kControl;
+        }
+        fl_color(background);
+        fl_rectf(x(), y(), w(), h());
+
+        if (isSelected_) {
+            fl_color(UiTheme::kText);
+            fl_rectf(x(), y() + 6, 2, h() - 12);
+        }
+
+        const Fl_Color foreground = isSelected_ ? UiTheme::kText : UiTheme::kSecondaryText;
+        drawIcon(x() + 14, y() + h() / 2, foreground);
+        fl_color(isSelected_ ? UiTheme::kText : UiTheme::kSecondaryText);
+        fl_font(isSelected_ ? UiTheme::kUiFontSemibold : UiTheme::kUiFont, 12);
+        fl_draw(label(), x() + 42, y(), w() - 50, h(), FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+    }
+
+private:
+    void drawIcon(int left, int centerY, Fl_Color color) const {
+        fl_color(color);
+        fl_line_style(FL_SOLID, 1);
+        switch (icon_) {
+            case NavigationIcon::status:
+                fl_circle(left + 3, centerY, 2);
+                fl_line(left + 5, centerY, left + 11, centerY);
+                fl_circle(left + 13, centerY, 2);
+                break;
+            case NavigationIcon::source:
+                fl_rect(left + 2, centerY - 7, 11, 14);
+                fl_line(left + 9, centerY - 7, left + 13, centerY - 3);
+                fl_line(left + 9, centerY - 7, left + 9, centerY - 3);
+                fl_line(left + 9, centerY - 3, left + 13, centerY - 3);
+                break;
+            case NavigationIcon::project:
+                fl_line(left + 1, centerY - 5, left + 6, centerY - 5);
+                fl_line(left + 6, centerY - 5, left + 8, centerY - 3);
+                fl_line(left + 8, centerY - 3, left + 15, centerY - 3);
+                fl_line(left + 15, centerY - 3, left + 15, centerY + 6);
+                fl_line(left + 15, centerY + 6, left + 1, centerY + 6);
+                fl_line(left + 1, centerY + 6, left + 1, centerY - 5);
+                break;
+            case NavigationIcon::destination:
+                fl_rect(left + 1, centerY - 6, 14, 12);
+                fl_line(left + 1, centerY + 2, left + 15, centerY + 2);
+                fl_circle(left + 12, centerY + 4, 1);
+                break;
+            case NavigationIcon::activity:
+                fl_circle(left + 8, centerY, 7);
+                fl_line(left + 8, centerY, left + 8, centerY - 4);
+                fl_line(left + 8, centerY, left + 11, centerY + 2);
+                break;
+            case NavigationIcon::settings:
+                fl_circle(left + 8, centerY, 4);
+                fl_circle(left + 8, centerY, 1);
+                fl_line(left + 8, centerY - 7, left + 8, centerY - 5);
+                fl_line(left + 8, centerY + 5, left + 8, centerY + 7);
+                fl_line(left + 1, centerY, left + 3, centerY);
+                fl_line(left + 13, centerY, left + 15, centerY);
+                break;
+        }
+        fl_line_style(0);
+    }
+
+    NavigationIcon icon_;
+    bool isSelected_{};
+    bool isHovered_{};
+};
+
+class PanelStack final : public Fl_Group {
+public:
+    PanelStack(int x, int y, int width, int height) : Fl_Group(x, y, width, height) {}
+
+    void resize(int x, int y, int width, int height) override {
+        Fl_Group::resize(x, y, width, height);
+        for (int index = 0; index < children(); ++index) {
+            child(index)->resize(x, y, width, height);
+        }
+    }
+};
 
 [[nodiscard]] std::string sizeWarningKey(std::string_view sourceId, std::string_view destinationId) {
     return std::string{sourceId} + '\n' + std::string{destinationId};
@@ -233,16 +360,14 @@ public:
         }
         restartSourceWatcher();
         initializeRouteStates();
+        updateGlobalStatus();
         Fl::add_timeout(1.0, automaticWorkTimerCallback, this);
         spdlog::info("Application started in the notification area");
     }
 
     ~App() {
-<<<<<<< HEAD
         Fl::remove_timeout(automaticWorkTimerCallback, this);
         sourceWatcher_.stop();
-=======
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
         if (backupThread_.joinable()) {
             backupThread_.join();
         }
@@ -269,9 +394,7 @@ public:
         window_->show();
 
         const HWND nativeWindow = fl_xid(window_.get());
-        constexpr DWORD kDarkTitleBarAttribute = 20;
-        const BOOL useDarkTitleBar = TRUE;
-        DwmSetWindowAttribute(nativeWindow, kDarkTitleBarAttribute, &useDarkTitleBar, sizeof(useDarkTitleBar));
+        applyDarkWindowChrome(nativeWindow);
         ShowWindow(nativeWindow, SW_SHOWNORMAL);
         SetForegroundWindow(nativeWindow);
         BringWindowToTop(nativeWindow);
@@ -303,24 +426,28 @@ private:
     BackupConfig config_;
     TrayIcon tray_;
     std::unique_ptr<Fl_Double_Window> window_;
+    PanelStack* panelStack_{};
     SourcesPanel* sourcesPanel_{};
     DestinationsPanel* destinationsPanel_{};
     OverviewPanel* overviewPanel_{};
     ProjectsPanel* projectsPanel_{};
+    ActivityPanel* activityPanel_{};
+    SettingsPanel* settingsPanel_{};
     Fl_Button* overviewNavigationButton_{};
     Fl_Button* sourcesNavigationButton_{};
     Fl_Button* projectsNavigationButton_{};
     Fl_Button* destinationsNavigationButton_{};
+    Fl_Button* activityNavigationButton_{};
+    Fl_Button* settingsNavigationButton_{};
+    Fl_Box* globalStatus_{};
     Fl_Box* configurationSummary_{};
     Fl_Box* footerStatus_{};
     Fl_Button* runNowButton_{};
+    Fl_Menu_Button* pauseMenu_{};
     BackupEngine backupEngine_;
-<<<<<<< HEAD
     SourceWatcher sourceWatcher_;
     std::vector<ConfiguredProjectsSource> projectsSources_;
     std::unordered_set<std::string> deferredSizeWarnings_;
-=======
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
     std::thread backupThread_;
     std::mutex backupResultMutex_;
     std::optional<BackupRunSummary> backupResult_;
@@ -329,6 +456,7 @@ private:
     bool hasPositionedWindow_{};
     bool isProjectsRefreshPending_{};
     std::chrono::steady_clock::time_point nextAutomaticAttempt_{};
+    std::optional<std::chrono::steady_clock::time_point> pauseUntil_;
 
     static void hideCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->hide();
@@ -350,22 +478,42 @@ private:
         static_cast<App*>(data)->showDestinationsPage();
     }
 
-<<<<<<< HEAD
     static void projectsNavigationCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->showProjectsPage();
     }
 
-=======
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
+    static void activityNavigationCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->showActivityPage();
+    }
+
+    static void settingsNavigationCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->showSettingsPage();
+    }
+
     static void runNowCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->startMirrorRun();
+    }
+
+    static void pauseOneHourCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->pauseFor(std::chrono::hours{1});
+    }
+
+    static void pauseThreeHoursCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->pauseFor(std::chrono::hours{3});
+    }
+
+    static void pauseFiveHoursCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->pauseFor(std::chrono::hours{5});
+    }
+
+    static void resumeCallback(Fl_Widget*, void* data) {
+        static_cast<App*>(data)->resumeAutomaticBackups();
     }
 
     static void mirrorFinishedAwake(void* data) {
         static_cast<App*>(data)->finishMirrorRun();
     }
 
-<<<<<<< HEAD
     static void sourceChangedAwake(void* data) {
         std::unique_ptr<SourceChangeNotification> notification{static_cast<SourceChangeNotification*>(data)};
         notification->app->handleSourceChanged(notification->sourceId);
@@ -377,40 +525,60 @@ private:
         Fl::repeat_timeout(1.0, automaticWorkTimerCallback, data);
     }
 
-=======
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
     void buildUi() {
         Fl::scheme("none");
-        Fl::background(9, 9, 11);
-        Fl::foreground(250, 250, 250);
+        UiTheme::initializeFonts();
+        Fl::background(23, 23, 23);
+        Fl::background2(31, 31, 31);
+        Fl::foreground(242, 242, 242);
 
         window_ = std::make_unique<Fl_Double_Window>(kWindowWidth, kWindowHeight, "BackItUpTool");
-        window_->size_range(760, 520);
+        window_->size_range(860, 560);
         window_->color(UiTheme::kBackground);
         window_->callback(hideCallback, this);
         window_->begin();
 
         auto* header = new Fl_Box(0, 0, kWindowWidth, kTopBarHeight);
         header->box(FL_FLAT_BOX);
-        header->color(UiTheme::kBackground);
-        addLabel(20, 0, 300, kTopBarHeight, "BackItUpTool", 18, UiTheme::kText, FL_HELVETICA_BOLD);
-        runNowButton_ = new Fl_Button(320, 15, 100, 34, "Run now");
-        styleButton(*runNowButton_, UiTheme::kPrimary, UiTheme::kPrimaryText);
+        header->color(UiTheme::kSurface);
+        globalStatus_ = addLabel(16, 0, 190, kTopBarHeight, "●—● Checking", 13, UiTheme::kSecondaryText,
+                                 UiTheme::kUiFontSemibold);
+        configurationSummary_ = addLabel(206, 0, kWindowWidth - 430, kTopBarHeight, "", 11,
+                                         UiTheme::kSecondaryText);
+
+        pauseMenu_ = new Fl_Menu_Button(kWindowWidth - 220, 11, 96, 30, "Pause");
+        pauseMenu_->box(FL_FLAT_BOX);
+        pauseMenu_->color(UiTheme::kControl);
+        pauseMenu_->selection_color(UiTheme::kSelection);
+        pauseMenu_->labelcolor(UiTheme::kText);
+        pauseMenu_->labelfont(UiTheme::kUiFont);
+        pauseMenu_->labelsize(12);
+        pauseMenu_->add("1 hour", 0, pauseOneHourCallback, this);
+        pauseMenu_->add("3 hours", 0, pauseThreeHoursCallback, this);
+        pauseMenu_->add("5 hours", 0, pauseFiveHoursCallback, this);
+        pauseMenu_->add("Resume", 0, resumeCallback, this);
+
+        runNowButton_ = new Fl_Button(kWindowWidth - 116, 11, 100, 30, "Run now");
+        styleButton(*runNowButton_, false, true);
         runNowButton_->callback(runNowCallback, this);
-        configurationSummary_ = addLabel(440, 0, 440, kTopBarHeight, "", 11, UiTheme::kMutedText);
-        configurationSummary_->align(FL_ALIGN_RIGHT | FL_ALIGN_INSIDE);
+        auto* headerDivider = new Fl_Box(0, kTopBarHeight - 1, kWindowWidth, 1);
+        headerDivider->box(FL_FLAT_BOX);
+        headerDivider->color(UiTheme::kBorder);
 
         auto* sidebar = new Fl_Box(0, kTopBarHeight, kSidebarWidth, kWindowHeight - kTopBarHeight);
         sidebar->box(FL_FLAT_BOX);
-        sidebar->color(UiTheme::kSidebar);
+        sidebar->color(UiTheme::kNavigation);
+        auto* sidebarDivider = new Fl_Box(kSidebarWidth - 1, kTopBarHeight, 1,
+                                          kWindowHeight - kTopBarHeight - kFooterHeight);
+        sidebarDivider->box(FL_FLAT_BOX);
+        sidebarDivider->color(UiTheme::kBorder);
 
         constexpr const char* navigationLabels[] = {
-            "Overview", "Sources", "Projects", "Destinations", "Activity", "Settings"};
+            "Backup status", "Sources", "Projects", "Destinations", "Activity", "Settings"};
         for (std::size_t index = 0; index < std::size(navigationLabels); ++index) {
-            const int buttonY = kTopBarHeight + 16 + static_cast<int>(index) * 44;
-            auto* button = new Fl_Button(12, buttonY, kSidebarWidth - 24, 34, navigationLabels[index]);
-            styleButton(*button, index == 0 ? UiTheme::kCard : UiTheme::kSidebar,
-                        index == 0 ? UiTheme::kText : UiTheme::kMutedText);
+            const int buttonY = kTopBarHeight + 12 + static_cast<int>(index) * 36;
+            auto* button = new Fl_Button(10, buttonY, kSidebarWidth - 20, 30, navigationLabels[index]);
+            styleButton(*button, index == 0);
             button->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
             if (index == 0) {
                 overviewNavigationButton_ = button;
@@ -424,41 +592,60 @@ private:
             } else if (index == 3) {
                 destinationsNavigationButton_ = button;
                 button->callback(destinationsNavigationCallback, this);
-            } else {
-                button->deactivate();
+            } else if (index == 4) {
+                activityNavigationButton_ = button;
+                button->callback(activityNavigationCallback, this);
+            } else if (index == 5) {
+                settingsNavigationButton_ = button;
+                button->callback(settingsNavigationCallback, this);
             }
         }
 
         auto* openFolderButton =
-            new Fl_Button(12, kWindowHeight - kFooterHeight - 52, kSidebarWidth - 24, 34, "Open data folder");
-        styleButton(*openFolderButton, UiTheme::kCard);
+            new Fl_Button(10, kWindowHeight - kFooterHeight - 40, kSidebarWidth - 20, 30, "Open data folder");
+        styleButton(*openFolderButton);
         openFolderButton->callback(openDataDirectoryCallback, this);
 
-        const int panelX = kSidebarWidth + 12;
-        const int panelY = kTopBarHeight + 12;
-        const int panelWidth = kWindowWidth - panelX - 12;
-        const int panelHeight = kWindowHeight - panelY - kFooterHeight - 12;
+        const int panelX = kSidebarWidth;
+        const int panelY = kTopBarHeight;
+        const int panelWidth = kWindowWidth - panelX;
+        const int panelHeight = kWindowHeight - panelY - kFooterHeight;
+        panelStack_ = new PanelStack(panelX, panelY, panelWidth, panelHeight);
+        panelStack_->box(FL_FLAT_BOX);
+        panelStack_->color(UiTheme::kBackground);
+        panelStack_->begin();
         sourcesPanel_ = new SourcesPanel(
-            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
+            [this] { handleConfigChanged(); });
         destinationsPanel_ = new DestinationsPanel(
-            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
+            [this] { handleConfigChanged(); });
         projectsPanel_ = new ProjectsPanel(
-            panelX, panelY, panelWidth, panelHeight, config_, configStore_, [this] { handleConfigChanged(); });
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
+            [this] { handleConfigChanged(); });
         overviewPanel_ = new OverviewPanel(panelX, panelY, panelWidth, panelHeight, config_, stateStore_);
+        activityPanel_ = new ActivityPanel(panelX, panelY, panelWidth, panelHeight, config_, stateStore_);
+        settingsPanel_ = new SettingsPanel(panelX, panelY, panelWidth, panelHeight, config_, configStore_,
+                                           [this] { handleConfigChanged(); });
+        panelStack_->end();
         sourcesPanel_->hide();
         projectsPanel_->hide();
         destinationsPanel_->hide();
+        activityPanel_->hide();
+        settingsPanel_->hide();
 
-        auto* footer = new Fl_Box(kSidebarWidth, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth,
+        auto* footer = new Fl_Box(0, kWindowHeight - kFooterHeight, kWindowWidth,
                                   kFooterHeight);
         footer->box(FL_FLAT_BOX);
-        footer->color(UiTheme::kSidebar);
+        footer->color(UiTheme::kSurface);
+        auto* footerDivider = new Fl_Box(0, kWindowHeight - kFooterHeight, kWindowWidth, 1);
+        footerDivider->box(FL_FLAT_BOX);
+        footerDivider->color(UiTheme::kBorder);
         footerStatus_ = addLabel(kSidebarWidth + 16, kWindowHeight - kFooterHeight, kWindowWidth - kSidebarWidth - 32,
-                                  kFooterHeight, "Ready. Select Run now to mirror configured Sources.", 10,
-                                  UiTheme::kMutedText);
+                                  kFooterHeight, "Watching for changes.", 10, UiTheme::kSecondaryText);
 
         window_->end();
-        window_->resizable(overviewPanel_);
+        window_->resizable(panelStack_);
         updateConfigurationSummary();
     }
 
@@ -483,53 +670,49 @@ private:
     }
 
     void showSourcesPage() {
-        overviewPanel_->hide();
-        projectsPanel_->hide();
-        destinationsPanel_->hide();
-        sourcesPanel_->show();
-        styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*sourcesNavigationButton_, UiTheme::kCard, UiTheme::kText);
-        styleButton(*projectsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        window_->redraw();
+        sourcesPanel_->refresh();
+        showPanel(sourcesPanel_, sourcesNavigationButton_);
     }
 
     void showDestinationsPage() {
-        overviewPanel_->hide();
-        sourcesPanel_->hide();
-        projectsPanel_->hide();
         destinationsPanel_->refresh();
-        destinationsPanel_->show();
-        styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*projectsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*destinationsNavigationButton_, UiTheme::kCard, UiTheme::kText);
-        window_->redraw();
+        showPanel(destinationsPanel_, destinationsNavigationButton_);
     }
 
     void showOverviewPage() {
-        sourcesPanel_->hide();
-        projectsPanel_->hide();
-        destinationsPanel_->hide();
         overviewPanel_->refresh();
-        overviewPanel_->show();
-        styleButton(*overviewNavigationButton_, UiTheme::kCard, UiTheme::kText);
-        styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*projectsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        window_->redraw();
+        showPanel(overviewPanel_, overviewNavigationButton_);
     }
 
     void showProjectsPage() {
-        overviewPanel_->hide();
-        sourcesPanel_->hide();
-        destinationsPanel_->hide();
         projectsPanel_->refresh();
-        projectsPanel_->show();
-        styleButton(*overviewNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*sourcesNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
-        styleButton(*projectsNavigationButton_, UiTheme::kCard, UiTheme::kText);
-        styleButton(*destinationsNavigationButton_, UiTheme::kSidebar, UiTheme::kMutedText);
+        showPanel(projectsPanel_, projectsNavigationButton_);
+    }
+
+    void showActivityPage() {
+        activityPanel_->refresh();
+        showPanel(activityPanel_, activityNavigationButton_);
+    }
+
+    void showSettingsPage() {
+        settingsPanel_->refresh();
+        showPanel(settingsPanel_, settingsNavigationButton_);
+    }
+
+    void showPanel(Fl_Group* selectedPanel, Fl_Button* selectedNavigationButton) {
+        constexpr std::size_t kPageCount = 6;
+        Fl_Group* panels[kPageCount] = {
+            overviewPanel_, sourcesPanel_, projectsPanel_, destinationsPanel_, activityPanel_, settingsPanel_};
+        Fl_Button* navigationButtons[kPageCount] = {
+            overviewNavigationButton_, sourcesNavigationButton_, projectsNavigationButton_,
+            destinationsNavigationButton_, activityNavigationButton_, settingsNavigationButton_};
+        for (Fl_Group* panel : panels) {
+            panel->hide();
+        }
+        for (Fl_Button* button : navigationButtons) {
+            styleButton(*button, button == selectedNavigationButton);
+        }
+        selectedPanel->show();
         window_->redraw();
     }
 
@@ -537,13 +720,16 @@ private:
         deferredSizeWarnings_.clear();
         sourcesPanel_->refresh();
         projectsPanel_->refresh();
+        destinationsPanel_->refresh();
         restartSourceWatcher();
         initializeRouteStates();
         overviewPanel_->refresh();
+        activityPanel_->refresh();
+        settingsPanel_->refresh();
         updateConfigurationSummary();
+        updateGlobalStatus();
     }
 
-<<<<<<< HEAD
     void initializeRouteStates() {
         for (const BackupRoute& route : config_.routes) {
             if (!route.isMirrorEnabled) {
@@ -617,6 +803,7 @@ private:
         projectsPanel_->refresh();
         overviewPanel_->refresh();
         nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+        updateGlobalStatus();
     }
 
     void markSourceDirty(const std::string& sourceId) {
@@ -642,11 +829,33 @@ private:
             footerStatus_->copy_label("Change detected. Mirror is pending.");
             overviewPanel_->refresh();
             nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+            updateGlobalStatus();
         }
     }
 
+    void pauseFor(std::chrono::hours duration) {
+        pauseUntil_ = std::chrono::steady_clock::now() + duration;
+        footerStatus_->copy_label("Automatic backups are paused. Run now remains available.");
+        updateGlobalStatus();
+    }
+
+    void resumeAutomaticBackups() {
+        pauseUntil_.reset();
+        nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+        footerStatus_->copy_label("Automatic backups resumed.");
+        updateGlobalStatus();
+    }
+
     void checkAutomaticWork() {
-        if (isBackupRunning_ || std::chrono::steady_clock::now() < nextAutomaticAttempt_) {
+        const auto now = std::chrono::steady_clock::now();
+        if (pauseUntil_.has_value()) {
+            if (now < *pauseUntil_) {
+                return;
+            }
+            pauseUntil_.reset();
+            updateGlobalStatus();
+        }
+        if (isBackupRunning_ || now < nextAutomaticAttempt_) {
             return;
         }
         const bool hasActionablePendingWork = std::ranges::any_of(
@@ -662,14 +871,10 @@ private:
     }
 
     void startMirrorRun(bool pendingOnly = false) {
-=======
-    void startMirrorRun() {
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
         if (isBackupRunning_) {
             return;
         }
         try {
-<<<<<<< HEAD
             if (!pendingOnly) {
                 deferredSizeWarnings_.clear();
             }
@@ -721,11 +926,6 @@ private:
                 footerStatus_->copy_label(
                     "Large items skipped. You will be asked again only after the Project changes or Run now is used.");
                 nextAutomaticAttempt_ = std::chrono::steady_clock::now();
-=======
-            const std::vector<MirrorPlan> plans = backupEngine_.previewMirrors(config_);
-            if (plans.empty()) {
-                footerStatus_->copy_label("No Mirror routes are configured.");
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
                 return;
             }
             if (backupThread_.joinable()) {
@@ -733,20 +933,14 @@ private:
             }
             isBackupRunning_ = true;
             runNowButton_->deactivate();
+            updateGlobalStatus();
             const std::string status = "Mirroring " + std::to_string(plans.size()) + " configured Sources...";
             footerStatus_->copy_label(status.c_str());
-<<<<<<< HEAD
             const BackupConfig configSnapshot = config_;
             backupThread_ = std::thread([this, configSnapshot, plans = std::move(plans)] {
                 BackupRunSummary result;
                 try {
                     result = backupEngine_.runMirrors(configSnapshot, plans, stateStore_, dataDirectory_ / L"logs");
-=======
-            backupThread_ = std::thread([this] {
-                BackupRunSummary result;
-                try {
-                    result = backupEngine_.runMirrors(config_, stateStore_, dataDirectory_ / L"logs");
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
                 } catch (const std::exception& error) {
                     result.failed = 1;
                     result.messages.push_back(error.what());
@@ -775,7 +969,6 @@ private:
         }
         isBackupRunning_ = false;
         runNowButton_->activate();
-<<<<<<< HEAD
         if (isProjectsRefreshPending_) {
             isProjectsRefreshPending_ = false;
             refreshProjectsFromRoots();
@@ -784,21 +977,79 @@ private:
                                    std::to_string(result.failed) + " failed.";
         footerStatus_->copy_label(status.c_str());
         overviewPanel_->refresh();
+        activityPanel_->refresh();
         nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-=======
-        const std::string status = "Mirror finished: " + std::to_string(result.succeeded) + " succeeded, " +
-                                   std::to_string(result.failed) + " failed.";
-        footerStatus_->copy_label(status.c_str());
->>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
+        updateGlobalStatus();
         window_->redraw();
     }
 
     void updateConfigurationSummary() {
-        const std::string summary = std::to_string(config_.manualSources.size()) + " Manual Sources   " +
-                                    std::to_string(config_.projectsRoots.size()) + " Project Roots   " +
-                                    std::to_string(config_.destinations.size()) + " Destinations";
+        std::optional<std::string> latestSuccess;
+        for (const RouteRuntimeState& state : stateStore_.routeStates()) {
+            if (state.lastSuccessUtc.has_value() &&
+                (!latestSuccess.has_value() || *state.lastSuccessUtc > *latestSuccess)) {
+                latestSuccess = state.lastSuccessUtc;
+            }
+        }
+        const std::size_t watchedCount = config_.manualSources.size() + projectsSources_.size();
+        const std::string summary = std::to_string(watchedCount) + " watched · " +
+                                    std::to_string(config_.destinations.size()) + " destinations · Last Mirror " +
+                                    (latestSuccess.has_value() ? *latestSuccess : "not run yet");
         configurationSummary_->copy_label(summary.c_str());
         window_->redraw();
+    }
+
+    void updateGlobalStatus() {
+        const auto isConfiguredState = [&](const RouteRuntimeState& state) {
+            return std::ranges::any_of(config_.routes, [&](const BackupRoute& route) {
+                if (!route.isMirrorEnabled || route.destinationId != state.destinationId) {
+                    return false;
+                }
+                if (route.sourceId == state.sourceId) {
+                    return true;
+                }
+                return std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
+                    return source.rootId == route.sourceId && source.source.id == state.sourceId;
+                });
+            });
+        };
+
+        std::size_t pendingCount = 0;
+        bool hasError = false;
+        for (const RouteRuntimeState& state : stateStore_.routeStates()) {
+            if (!isConfiguredState(state)) {
+                continue;
+            }
+            if (state.isDirty) {
+                ++pendingCount;
+            }
+            if (state.status == RouteStatus::error) {
+                hasError = true;
+            }
+        }
+
+        UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
+        std::string text{UiTheme::statusText(status)};
+        if (pauseUntil_.has_value()) {
+            status = UiTheme::BackupStatus::waiting;
+            text = "●  ○ Paused";
+        } else if (isBackupRunning_) {
+            status = UiTheme::BackupStatus::syncing;
+            text = std::string{UiTheme::statusText(status)};
+        } else if (hasError) {
+            status = UiTheme::BackupStatus::error;
+            text = std::string{UiTheme::statusText(status)};
+        } else if (pendingCount > 0) {
+            status = UiTheme::BackupStatus::waiting;
+            text = "●  ○ " + std::to_string(pendingCount) + " waiting";
+        } else if (config_.routes.empty()) {
+            status = UiTheme::BackupStatus::inactive;
+            text = "○  ○ No backup routes";
+        }
+
+        globalStatus_->copy_label(text.c_str());
+        globalStatus_->labelcolor(UiTheme::statusColor(status));
+        updateConfigurationSummary();
     }
 
     void reportError(const std::exception& error) {

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <unordered_set>
 #include <utility>
@@ -18,11 +19,12 @@
 
 #include "config_store.hpp"
 #include "native_file_dialog.hpp"
+#include "state_store.hpp"
 #include "ui_theme.hpp"
 
 namespace {
 
-constexpr int kRootColumnWidths[] = {410, 95, 95, 0};
+constexpr int kRootColumnWidths[] = {128, 470, 90, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -30,16 +32,18 @@ constexpr int kRootColumnWidths[] = {410, 95, 95, 0};
 }
 
 void styleButton(Fl_Button& button, bool isPrimary = false) {
-    button.box(FL_BORDER_BOX);
-    button.down_box(FL_BORDER_BOX);
-    button.color(isPrimary ? UiTheme::kPrimary : UiTheme::kCard);
+    button.box(FL_FLAT_BOX);
+    button.down_box(FL_FLAT_BOX);
+    button.color(UiTheme::kControl);
+    button.down_color(UiTheme::kPressedControl);
     button.selection_color(UiTheme::kSelection);
-    button.labelcolor(isPrimary ? UiTheme::kPrimaryText : UiTheme::kText);
+    button.labelcolor(UiTheme::kText);
+    button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = FL_HELVETICA) {
+                 Fl_Font font = UiTheme::kUiFont) {
     auto* label = new Fl_Box(x, y, width, height, text);
     label->box(FL_NO_BOX);
     label->labelsize(size);
@@ -49,51 +53,92 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     return label;
 }
 
+[[nodiscard]] UiTheme::BackupStatus rootStatus(const ProjectsRoot& root,
+                                                const ConfiguredProjectsDiscovery& discovery,
+                                                const BackupConfig& config, const StateStore& stateStore) {
+    bool hasRoute = false;
+    UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
+    for (const BackupRoute& route : config.routes) {
+        if (route.sourceId != root.id || !route.isMirrorEnabled) {
+            continue;
+        }
+        hasRoute = true;
+        for (const ConfiguredProjectsSource& source : discovery.sources) {
+            if (source.rootId != root.id) {
+                continue;
+            }
+            const std::optional<RouteRuntimeState> state =
+                stateStore.routeState(source.source.id, route.destinationId);
+            if (!state.has_value() || state->isDirty) {
+                status = UiTheme::BackupStatus::waiting;
+            }
+            if (state.has_value() && state->status == RouteStatus::running) {
+                status = UiTheme::BackupStatus::syncing;
+            }
+            if (state.has_value() && state->status == RouteStatus::error) {
+                return UiTheme::BackupStatus::error;
+            }
+        }
+    }
+    return hasRoute ? status : UiTheme::BackupStatus::inactive;
+}
+
 }  // namespace
 
 ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& config,
-                             const ConfigStore& configStore, std::function<void()> configChangedCallback)
+                             const ConfigStore& configStore, const StateStore& stateStore,
+                             std::function<void()> configChangedCallback)
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
-      configChangedCallback_(std::move(configChangedCallback)) {
+      stateStore_(stateStore), configChangedCallback_(std::move(configChangedCallback)) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
-    addLabel(x + 20, y + 14, 300, 32, "Project Roots", 22, UiTheme::kText, FL_HELVETICA_BOLD);
-    addLabel(x + 20, y + 45, width - 40, 34,
-             "Only immediate child folders containing .backup-watch are backed up.", 11, UiTheme::kMutedText);
+    addLabel(x + 16, y + 10, 220, 28, "Projects", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
+    addLabel(x + 16, y + 36, width - 32, 20,
+             "Immediate child folders opt in with .backup-watch. Git repositories and generated folders are excluded.",
+             11, UiTheme::kSecondaryText);
 
-    auto* addButton = new Fl_Button(x + 20, y + 84, 135, 34, "Add roots");
+    auto* addButton = new Fl_Button(x + 16, y + 66, 112, 30, "Add roots");
     styleButton(*addButton, true);
     addButton->callback(addRootsCallback, this);
-    removeButton_ = new Fl_Button(x + 165, y + 84, 145, 34, "Remove selected");
+    removeButton_ = new Fl_Button(x + 136, y + 66, 132, 30, "Remove selected");
     styleButton(*removeButton_);
     removeButton_->callback(removeCallback, this);
 
-    addLabel(x + 330, y + 84, 55, 34, "Send to", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    destinationChoice_ = new Fl_Choice(x + 385, y + 84, 190, 34);
+    addLabel(x + 286, y + 66, 62, 30, "Back up to", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    destinationChoice_ = new Fl_Choice(x + 354, y + 66, 210, 30);
     destinationChoice_->box(FL_BORDER_BOX);
-    destinationChoice_->color(UiTheme::kCard);
+    destinationChoice_->color(UiTheme::kSurface);
     destinationChoice_->textcolor(UiTheme::kText);
-    connectButton_ = new Fl_Button(x + 585, y + 84, 92, 34, "Connect");
+    destinationChoice_->textfont(UiTheme::kUiFont);
+    destinationChoice_->textsize(12);
+    connectButton_ = new Fl_Button(x + 572, y + 66, 96, 30, "Connect");
     styleButton(*connectButton_, true);
     connectButton_->callback(connectCallback, this);
-    disconnectButton_ = new Fl_Button(x + 585, y + 124, 92, 30, "Disconnect");
+    disconnectButton_ = new Fl_Button(x + 676, y + 66, 104, 30, "Disconnect");
     styleButton(*disconnectButton_);
     disconnectButton_->callback(disconnectCallback, this);
 
-    addLabel(x + 24, y + 166, 390, 24, "Root folder", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    addLabel(x + 434, y + 166, 85, 24, "Opted in", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    addLabel(x + 529, y + 166, 90, 24, "Destinations", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    rootBrowser_ = new Fl_Multi_Browser(x + 20, y + 191, width - 40, height - 241);
+    addLabel(x + 20, y + 108, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 148, y + 108, 460, 22, "Root folder", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    addLabel(x + 618, y + 108, 86, 22, "Projects", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    addLabel(x + 708, y + 108, 100, 22, "Destinations", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    rootBrowser_ = new Fl_Multi_Browser(x + 16, y + 130, width - 32, height - 162);
     rootBrowser_->box(FL_BORDER_BOX);
-    rootBrowser_->color(UiTheme::kCard);
+    rootBrowser_->color(UiTheme::kSurface);
     rootBrowser_->textcolor(UiTheme::kText);
     rootBrowser_->selection_color(UiTheme::kSelection);
+    rootBrowser_->textfont(UiTheme::kUiFont);
+    rootBrowser_->textsize(12);
     rootBrowser_->column_widths(kRootColumnWidths);
     rootBrowser_->column_char('\t');
     rootBrowser_->format_char(0);
     rootBrowser_->callback(selectionCallback, this);
-    resultSummary_ = addLabel(x + 20, y + height - 42, width - 40, 28, "", 11, UiTheme::kMutedText);
+    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
     end();
     resizable(rootBrowser_);
     refresh();
@@ -115,7 +160,8 @@ void ProjectsPanel::refresh() {
             return source.rootId == root.id;
         });
         const auto routeCount = std::ranges::count(config_.routes, root.id, &BackupRoute::sourceId);
-        const std::string line = pathToUtf8(root.path) + '\t' + std::to_string(optedIn) + '\t' +
+        const std::string line = std::string{UiTheme::statusText(rootStatus(root, discovery_, config_, stateStore_))} +
+                                 '\t' + pathToUtf8(root.path) + '\t' + std::to_string(optedIn) + '\t' +
                                  std::to_string(routeCount);
         rootBrowser_->add(line.c_str());
     }

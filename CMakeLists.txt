@@ -37,6 +37,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(fltk)
 
 add_library(back_it_up_tool_core STATIC
+    src/activity_panel.cpp
     src/backup_config.cpp
     src/backup_engine.cpp
     src/config_store.cpp
@@ -47,16 +48,19 @@ add_library(back_it_up_tool_core STATIC
     src/overview_panel.cpp
     src/projects_panel.cpp
     src/projects_scanner.cpp
+    src/settings_panel.cpp
     src/sources_panel.cpp
     src/source_watcher.cpp
     src/state_store.cpp
     src/size_approval_dialog.cpp
+    src/window_theme.cpp
 )
 target_include_directories(back_it_up_tool_core PUBLIC src)
 target_link_libraries(back_it_up_tool_core PUBLIC
     fltk::fltk
     unofficial::sqlite3::sqlite3
     nlohmann_json::nlohmann_json
+    dwmapi
 )
 
 add_executable(BackItUpTool WIN32
@@ -67,7 +71,6 @@ target_link_libraries(BackItUpTool PRIVATE
     back_it_up_tool_core
     spdlog::spdlog
     comctl32
-    dwmapi
     shell32
     user32
     gdi32

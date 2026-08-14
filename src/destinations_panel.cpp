@@ -20,11 +20,12 @@
 
 #include "config_store.hpp"
 #include "native_file_dialog.hpp"
+#include "state_store.hpp"
 #include "ui_theme.hpp"
 
 namespace {
 
-constexpr int kDestinationColumnWidths[] = {86, 170, 255, 120, 0};
+constexpr int kDestinationColumnWidths[] = {150, 155, 300, 80, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -53,16 +54,18 @@ constexpr int kDestinationColumnWidths[] = {86, 170, 255, 120, 0};
 }
 
 void styleButton(Fl_Button& button, bool isPrimary = false) {
-    button.box(FL_BORDER_BOX);
-    button.down_box(FL_BORDER_BOX);
-    button.color(isPrimary ? UiTheme::kPrimary : UiTheme::kCard);
+    button.box(FL_FLAT_BOX);
+    button.down_box(FL_FLAT_BOX);
+    button.color(UiTheme::kControl);
+    button.down_color(UiTheme::kPressedControl);
     button.selection_color(UiTheme::kSelection);
-    button.labelcolor(isPrimary ? UiTheme::kPrimaryText : UiTheme::kText);
+    button.labelcolor(UiTheme::kText);
+    button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = FL_HELVETICA) {
+                 Fl_Font font = UiTheme::kUiFont) {
     auto* label = new Fl_Box(x, y, width, height, text);
     label->box(FL_NO_BOX);
     label->labelsize(size);
@@ -75,57 +78,64 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
 }  // namespace
 
 DestinationsPanel::DestinationsPanel(int x, int y, int width, int height, BackupConfig& config,
-                                     const ConfigStore& configStore, std::function<void()> configChangedCallback)
+                                     const ConfigStore& configStore, const StateStore& stateStore,
+                                     std::function<void()> configChangedCallback)
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
-      configChangedCallback_(std::move(configChangedCallback)) {
+      stateStore_(stateStore), configChangedCallback_(std::move(configChangedCallback)) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 20, y + 14, 240, 32, "Destinations", 22, UiTheme::kText, FL_HELVETICA_BOLD);
-    addLabel(x + 20, y + 50, width - 40, 24, "Connected USB drive", 11, UiTheme::kMutedText);
+    addLabel(x + 16, y + 10, 220, 28, "Destinations", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
+    addLabel(x + 16, y + 36, width - 32, 20,
+             "Select a connected USB drive, or add a folder or network path.", 11, UiTheme::kSecondaryText);
 
-    connectedDriveChoice_ = new Fl_Choice(x + 20, y + 76, 290, 34);
+    connectedDriveChoice_ = new Fl_Choice(x + 16, y + 66, 300, 30);
     connectedDriveChoice_->box(FL_BORDER_BOX);
-    connectedDriveChoice_->color(UiTheme::kCard);
+    connectedDriveChoice_->color(UiTheme::kSurface);
     connectedDriveChoice_->textcolor(UiTheme::kText);
     connectedDriveChoice_->selection_color(UiTheme::kSelection);
+    connectedDriveChoice_->textfont(UiTheme::kUiFont);
+    connectedDriveChoice_->textsize(12);
 
-    auto* refreshButton = new Fl_Button(x + 320, y + 76, 92, 34, "Refresh");
+    auto* refreshButton = new Fl_Button(x + 324, y + 66, 82, 30, "Refresh");
     styleButton(*refreshButton);
     refreshButton->callback(refreshCallback, this);
 
-    addUsbButton_ = new Fl_Button(x + 422, y + 76, 116, 34, "Add USB");
+    addUsbButton_ = new Fl_Button(x + 414, y + 66, 96, 30, "Add USB");
     styleButton(*addUsbButton_, true);
     addUsbButton_->callback(addUsbCallback, this);
 
-    auto* addFolderButton = new Fl_Button(x + 548, y + 76, 118, 34, "Add folder");
+    auto* addFolderButton = new Fl_Button(x + 518, y + 66, 104, 30, "Add folder");
     styleButton(*addFolderButton);
     addFolderButton->callback(addFolderCallback, this);
 
-    removeButton_ = new Fl_Button(x + 20, y + 122, 150, 34, "Remove selected");
+    removeButton_ = new Fl_Button(x + 630, y + 66, 132, 30, "Remove selected");
     styleButton(*removeButton_);
     removeButton_->callback(removeCallback, this);
     removeButton_->deactivate();
 
-    addLabel(x + 24, y + 168, 78, 24, "Status", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    addLabel(x + 110, y + 168, 160, 24, "Name", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    addLabel(x + 280, y + 168, 245, 24, "Location", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
-    addLabel(x + 535, y + 168, 120, 24, "Free space", 11, UiTheme::kMutedText, FL_HELVETICA_BOLD);
+    addLabel(x + 20, y + 108, 146, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 170, y + 108, 151, 22, "Name", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 325, y + 108, 296, 22, "Location", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 625, y + 108, 76, 22, "Pending", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 705, y + 108, 96, 22, "Free space", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
 
-    destinationBrowser_ = new Fl_Multi_Browser(x + 20, y + 193, width - 40, height - 243);
+    destinationBrowser_ = new Fl_Multi_Browser(x + 16, y + 130, width - 32, height - 162);
     destinationBrowser_->box(FL_BORDER_BOX);
-    destinationBrowser_->color(UiTheme::kCard);
+    destinationBrowser_->color(UiTheme::kSurface);
     destinationBrowser_->textcolor(UiTheme::kText);
     destinationBrowser_->selection_color(UiTheme::kSelection);
     destinationBrowser_->textsize(12);
+    destinationBrowser_->textfont(UiTheme::kUiFont);
     destinationBrowser_->column_widths(kDestinationColumnWidths);
     destinationBrowser_->column_char('\t');
     destinationBrowser_->format_char(0);
     destinationBrowser_->callback(selectionCallback, this);
     destinationBrowser_->when(FL_WHEN_CHANGED);
 
-    resultSummary_ = addLabel(x + 20, y + height - 42, width - 40, 24, "", 11, UiTheme::kMutedText);
+    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
 
     end();
     resizable(destinationBrowser_);
@@ -136,25 +146,40 @@ void DestinationsPanel::refresh() {
     try {
         refreshConnectedDrives();
         destinationBrowser_->clear();
+        const std::vector<RouteRuntimeState> states = stateStore_.routeStates();
 
         for (const Destination& destination : config_.destinations) {
-            std::string status = "Available";
+            bool isAvailable = true;
             std::string location = pathToUtf8(destination.root);
             std::string freeSpace = "--";
             if (destination.kind == DestinationKind::removable) {
                 const auto connected = std::ranges::find(connectedVolumes_, destination.volumeSerial,
                                                          &ConnectedVolume::serial);
                 if (connected == connectedVolumes_.end()) {
-                    status = "Unavailable";
+                    isAvailable = false;
                 } else {
                     location = pathToUtf8(connected->root);
                     freeSpace = formatGibibytes(connected->freeBytes);
                 }
             } else if (!std::filesystem::exists(destination.root)) {
-                status = "Unavailable";
+                isAvailable = false;
             }
 
-            const std::string line = status + '\t' + destination.name + '\t' + location + '\t' + freeSpace;
+            const auto pendingCount = std::ranges::count_if(states, [&](const RouteRuntimeState& state) {
+                return state.destinationId == destination.id && state.isDirty;
+            });
+            const bool hasError = std::ranges::any_of(states, [&](const RouteRuntimeState& state) {
+                return state.destinationId == destination.id && state.status == RouteStatus::error;
+            });
+            UiTheme::BackupStatus visualStatus = UiTheme::BackupStatus::current;
+            if (!isAvailable || pendingCount > 0) {
+                visualStatus = UiTheme::BackupStatus::waiting;
+            }
+            if (hasError && isAvailable) {
+                visualStatus = UiTheme::BackupStatus::error;
+            }
+            const std::string line = std::string{UiTheme::statusText(visualStatus)} + '\t' + destination.name + '\t' +
+                                     location + '\t' + std::to_string(pendingCount) + '\t' + freeSpace;
             destinationBrowser_->add(line.c_str());
         }
 

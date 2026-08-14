@@ -19,9 +19,13 @@
 #include <stdexcept>
 #include <sstream>
 #include <string>
+<<<<<<< HEAD
 #include <string_view>
 #include <thread>
 #include <unordered_set>
+=======
+#include <thread>
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 #include <utility>
 #include <vector>
 
@@ -234,8 +238,11 @@ public:
     }
 
     ~App() {
+<<<<<<< HEAD
         Fl::remove_timeout(automaticWorkTimerCallback, this);
         sourceWatcher_.stop();
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
         if (backupThread_.joinable()) {
             backupThread_.join();
         }
@@ -308,9 +315,12 @@ private:
     Fl_Box* footerStatus_{};
     Fl_Button* runNowButton_{};
     BackupEngine backupEngine_;
+<<<<<<< HEAD
     SourceWatcher sourceWatcher_;
     std::vector<ConfiguredProjectsSource> projectsSources_;
     std::unordered_set<std::string> deferredSizeWarnings_;
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
     std::thread backupThread_;
     std::mutex backupResultMutex_;
     std::optional<BackupRunSummary> backupResult_;
@@ -340,10 +350,13 @@ private:
         static_cast<App*>(data)->showDestinationsPage();
     }
 
+<<<<<<< HEAD
     static void projectsNavigationCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->showProjectsPage();
     }
 
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
     static void runNowCallback(Fl_Widget*, void* data) {
         static_cast<App*>(data)->startMirrorRun();
     }
@@ -352,6 +365,7 @@ private:
         static_cast<App*>(data)->finishMirrorRun();
     }
 
+<<<<<<< HEAD
     static void sourceChangedAwake(void* data) {
         std::unique_ptr<SourceChangeNotification> notification{static_cast<SourceChangeNotification*>(data)};
         notification->app->handleSourceChanged(notification->sourceId);
@@ -363,6 +377,8 @@ private:
         Fl::repeat_timeout(1.0, automaticWorkTimerCallback, data);
     }
 
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
     void buildUi() {
         Fl::scheme("none");
         Fl::background(9, 9, 11);
@@ -527,6 +543,7 @@ private:
         updateConfigurationSummary();
     }
 
+<<<<<<< HEAD
     void initializeRouteStates() {
         for (const BackupRoute& route : config_.routes) {
             if (!route.isMirrorEnabled) {
@@ -645,10 +662,14 @@ private:
     }
 
     void startMirrorRun(bool pendingOnly = false) {
+=======
+    void startMirrorRun() {
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
         if (isBackupRunning_) {
             return;
         }
         try {
+<<<<<<< HEAD
             if (!pendingOnly) {
                 deferredSizeWarnings_.clear();
             }
@@ -700,6 +721,11 @@ private:
                 footerStatus_->copy_label(
                     "Large items skipped. You will be asked again only after the Project changes or Run now is used.");
                 nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+=======
+            const std::vector<MirrorPlan> plans = backupEngine_.previewMirrors(config_);
+            if (plans.empty()) {
+                footerStatus_->copy_label("No Mirror routes are configured.");
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
                 return;
             }
             if (backupThread_.joinable()) {
@@ -709,11 +735,18 @@ private:
             runNowButton_->deactivate();
             const std::string status = "Mirroring " + std::to_string(plans.size()) + " configured Sources...";
             footerStatus_->copy_label(status.c_str());
+<<<<<<< HEAD
             const BackupConfig configSnapshot = config_;
             backupThread_ = std::thread([this, configSnapshot, plans = std::move(plans)] {
                 BackupRunSummary result;
                 try {
                     result = backupEngine_.runMirrors(configSnapshot, plans, stateStore_, dataDirectory_ / L"logs");
+=======
+            backupThread_ = std::thread([this] {
+                BackupRunSummary result;
+                try {
+                    result = backupEngine_.runMirrors(config_, stateStore_, dataDirectory_ / L"logs");
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
                 } catch (const std::exception& error) {
                     result.failed = 1;
                     result.messages.push_back(error.what());
@@ -742,6 +775,7 @@ private:
         }
         isBackupRunning_ = false;
         runNowButton_->activate();
+<<<<<<< HEAD
         if (isProjectsRefreshPending_) {
             isProjectsRefreshPending_ = false;
             refreshProjectsFromRoots();
@@ -751,6 +785,11 @@ private:
         footerStatus_->copy_label(status.c_str());
         overviewPanel_->refresh();
         nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+=======
+        const std::string status = "Mirror finished: " + std::to_string(result.succeeded) + " succeeded, " +
+                                   std::to_string(result.failed) + " failed.";
+        footerStatus_->copy_label(status.c_str());
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
         window_->redraw();
     }
 

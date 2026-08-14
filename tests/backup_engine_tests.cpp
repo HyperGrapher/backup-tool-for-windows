@@ -1,11 +1,18 @@
+<<<<<<< HEAD
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+=======
+#include <filesystem>
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "backup_engine.hpp"
+<<<<<<< HEAD
 #include "state_store.hpp"
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 
 TEST_CASE("mirror paths preserve the original local drive and folders") {
     const std::filesystem::path source = LR"(C:\Users\burak\Documents\Cinema 4D)";
@@ -18,6 +25,7 @@ TEST_CASE("mirror paths preserve the original network server and share") {
 
     REQUIRE(buildMirrorRelativePath(source) == LR"(UNC\server\share\folder\file.txt)");
 }
+<<<<<<< HEAD
 
 TEST_CASE("pending work waits for a missing folder Destination and runs when it returns") {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -198,3 +206,5 @@ TEST_CASE("manual folder routes do not show the Project size warning") {
     std::error_code cleanupError;
     std::filesystem::remove_all(testRoot, cleanupError);
 }
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525

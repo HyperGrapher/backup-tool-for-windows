@@ -8,14 +8,20 @@
 #include <ctime>
 #include <filesystem>
 #include <iomanip>
+<<<<<<< HEAD
 #include <set>
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "connected_volume.hpp"
+<<<<<<< HEAD
 #include "projects_scanner.hpp"
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 #include "state_store.hpp"
 
 namespace {
@@ -64,11 +70,14 @@ namespace {
     return *source;
 }
 
+<<<<<<< HEAD
 [[nodiscard]] const ProjectsRoot* findProjectsRoot(const BackupConfig& config, const std::string& id) {
     const auto root = std::ranges::find(config.projectsRoots, id, &ProjectsRoot::id);
     return root == config.projectsRoots.end() ? nullptr : &*root;
 }
 
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 [[nodiscard]] std::filesystem::path destinationRoot(const Destination& destination) {
     if (destination.kind == DestinationKind::path) {
         if (!std::filesystem::exists(destination.root)) {
@@ -109,6 +118,7 @@ namespace {
     return exitCode;
 }
 
+<<<<<<< HEAD
 void runTarZip(const std::filesystem::path& source, const std::filesystem::path& archivePath) {
     const std::filesystem::path parent = source.parent_path();
     const std::filesystem::path name = source.filename();
@@ -234,6 +244,8 @@ void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::
     }
 }
 
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
 }  // namespace
 
 std::filesystem::path buildMirrorRelativePath(const std::filesystem::path& sourcePath) {
@@ -249,17 +261,29 @@ std::filesystem::path buildMirrorRelativePath(const std::filesystem::path& sourc
     throw std::runtime_error("Source must use an absolute drive or network path.");
 }
 
+<<<<<<< HEAD
 std::vector<MirrorPlan> BackupEngine::previewMirrors(
     const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources) const {
+=======
+std::vector<MirrorPlan> BackupEngine::previewMirrors(const BackupConfig& config) const {
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
     std::vector<MirrorPlan> plans;
     for (const BackupRoute& route : config.routes) {
         if (!route.isMirrorEnabled) {
             continue;
         }
+<<<<<<< HEAD
+=======
+        const ManualSource& source = findManualSource(config, route.sourceId);
+        if (!std::filesystem::exists(source.path)) {
+            throw std::runtime_error("Source is unavailable: " + pathToUtf8(source.path));
+        }
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
         const auto destination = std::ranges::find(config.destinations, route.destinationId, &Destination::id);
         if (destination == config.destinations.end()) {
             throw std::runtime_error("Route has an unavailable Destination.");
         }
+<<<<<<< HEAD
         const std::filesystem::path availableDestinationRoot = destinationRoot(*destination);
         const auto manualSource = std::ranges::find(config.manualSources, route.sourceId, &ManualSource::id);
         if (manualSource != config.manualSources.end()) {
@@ -299,10 +323,20 @@ std::vector<MirrorPlan> BackupEngine::previewMirrors(
             plans.push_back(MirrorPlan{route.sourceId, source.id, destination->id, source.path, target,
                                        ManualSourceKind::folder, true});
         }
+=======
+        const std::filesystem::path target = destinationRoot(*destination) / L"BackItUpTool" / L"Mirrors" /
+                                             buildMirrorRelativePath(source.path);
+        const std::filesystem::path sourceRoot = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
+        if (isSameOrInside(target, sourceRoot) || isSameOrInside(sourceRoot, target)) {
+            throw std::runtime_error("Refusing a mirror whose Source and Destination overlap.");
+        }
+        plans.push_back(MirrorPlan{source.id, destination->id, source.path, target});
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
     }
     return plans;
 }
 
+<<<<<<< HEAD
 std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& config,
                                                             const std::vector<ConfiguredProjectsSource>& projectsSources,
                                                             const StateStore& stateStore) const {
@@ -371,11 +405,37 @@ BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std:
             if (exitCode >= 8) {
                 const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + " (robocopy " + std::to_string(exitCode) + ").";
                 stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
+=======
+BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, StateStore& stateStore,
+                                          const std::filesystem::path& logDirectory) const {
+    const std::vector<MirrorPlan> plans = previewMirrors(config);
+    std::filesystem::create_directories(logDirectory);
+    BackupRunSummary summary;
+    for (const MirrorPlan& plan : plans) {
+        const ManualSource& source = findManualSource(config, plan.sourceId);
+        const std::string attemptTime = utcNow();
+        stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::running, true, attemptTime, std::nullopt, std::nullopt});
+        try {
+            DWORD exitCode = 1;
+            if (source.kind == ManualSourceKind::file) {
+                std::filesystem::create_directories(plan.destination.parent_path());
+                std::filesystem::copy_file(source.path, plan.destination,
+                                           std::filesystem::copy_options::overwrite_existing);
+            } else {
+                std::filesystem::create_directories(plan.destination);
+                exitCode = runRobocopy(source.path, plan.destination,
+                                       logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"));
+            }
+            if (exitCode >= 8) {
+                const std::string message = "Mirror failed for " + pathToUtf8(source.path) + " (robocopy " + std::to_string(exitCode) + ").";
+                stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::error, true, attemptTime, std::nullopt, message});
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
                 stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
                 summary.messages.push_back(message);
                 ++summary.failed;
                 continue;
             }
+<<<<<<< HEAD
             const std::string message = "Mirror completed for " + pathToUtf8(plan.source) + ".";
             stateStore.completeRouteSuccess(plan.sourceId, plan.destinationId, utcNow());
             stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
@@ -398,6 +458,16 @@ BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std:
         } catch (const std::exception& error) {
             const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + ": " + error.what();
             stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
+=======
+            const std::string message = "Mirror completed for " + pathToUtf8(source.path) + ".";
+            stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::synced, false, attemptTime, utcNow(), std::nullopt});
+            stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
+            summary.messages.push_back(message);
+            ++summary.succeeded;
+        } catch (const std::exception& error) {
+            const std::string message = "Mirror failed for " + pathToUtf8(source.path) + ": " + error.what();
+            stateStore.setRouteState({plan.sourceId, plan.destinationId, RouteStatus::error, true, attemptTime, std::nullopt, message});
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525
             stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.failed;
@@ -405,6 +475,7 @@ BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std:
     }
     return summary;
 }
+<<<<<<< HEAD
 
 void BackupEngine::createDueSnapshot(const BackupRoute& route, const MirrorPlan& plan,
                                      const Destination& destination, StateStore& stateStore) const {
@@ -425,3 +496,5 @@ void BackupEngine::createDueSnapshot(const BackupRoute& route, const MirrorPlan&
     stateStore.appendActivity(utcNow(), "info", "Snapshot created at " + pathToUtf8(archivePath) + ".",
                               plan.sourceId, plan.destinationId);
 }
+=======
+>>>>>>> ca638f856d93a6c06c654f048bf27327bda35525

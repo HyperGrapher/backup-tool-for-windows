@@ -31,12 +31,13 @@ constexpr int kRootColumnWidths[] = {128, 470, 90, 100, 0};
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
-void styleButton(Fl_Button& button, bool isPrimary = false) {
+void styleButton(Fl_Button& button, bool isPrimary = false, bool isDanger = false) {
     button.box(FL_FLAT_BOX);
     button.down_box(FL_FLAT_BOX);
-    button.color(UiTheme::kControl);
-    button.down_color(UiTheme::kPressedControl);
-    button.selection_color(UiTheme::kSelection);
+    button.color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kControl));
+    button.down_color(isPrimary ? UiTheme::kPrimaryPressed
+                                : (isDanger ? UiTheme::kDangerPressed : UiTheme::kPressedControl));
+    button.selection_color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kSelection));
     button.labelcolor(UiTheme::kText);
     button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
@@ -102,7 +103,7 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     styleButton(*addButton, true);
     addButton->callback(addRootsCallback, this);
     removeButton_ = new Fl_Button(x + 136, y + 66, 132, 30, "Remove selected");
-    styleButton(*removeButton_);
+    styleButton(*removeButton_, false, true);
     removeButton_->callback(removeCallback, this);
 
     addLabel(x + 286, y + 66, 62, 30, "Back up to", 11, UiTheme::kSecondaryText,

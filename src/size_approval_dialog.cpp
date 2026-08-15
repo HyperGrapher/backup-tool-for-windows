@@ -27,11 +27,12 @@ namespace {
     return text.str();
 }
 
-void styleButton(Fl_Button& button, Fl_Color color, Fl_Color labelColor = UiTheme::kText) {
+void styleButton(Fl_Button& button, Fl_Color color, Fl_Color pressedColor,
+                 Fl_Color labelColor = UiTheme::kText) {
     button.box(FL_FLAT_BOX);
     button.down_box(FL_FLAT_BOX);
     button.color(color);
-    button.down_color(UiTheme::kPressedControl);
+    button.down_color(pressedColor);
     button.selection_color(UiTheme::kSelection);
     button.labelcolor(labelColor);
     button.labelfont(UiTheme::kUiFont);
@@ -83,11 +84,11 @@ SizeApprovalResult SizeApprovalDialog::show() {
     }
 
     auto* approveButton = new Fl_Button(24, 355, 190, 42, "Approve once");
-    styleButton(*approveButton, UiTheme::kControl);
+    styleButton(*approveButton, UiTheme::kPrimary, UiTheme::kPrimaryPressed);
     approveButton->labelfont(UiTheme::kUiFontSemibold);
     approveButton->callback(approveOnceCallback, this);
     auto* alwaysButton = new Fl_Button(226, 355, 230, 42, "Always allow Projects");
-    styleButton(*alwaysButton, UiTheme::kControl);
+    styleButton(*alwaysButton, UiTheme::kSuccessAction, UiTheme::kSuccessActionPressed);
     alwaysButton->callback(approveAlwaysCallback, this);
     const bool hasProjectWarning = std::ranges::any_of(warnings_, [](const SizeWarning& warning) {
         return warning.isProject;
@@ -96,7 +97,7 @@ SizeApprovalResult SizeApprovalDialog::show() {
         alwaysButton->deactivate();
     }
     auto* skipButton = new Fl_Button(468, 355, 228, 42, "Skip until it changes");
-    styleButton(*skipButton, UiTheme::kControl);
+    styleButton(*skipButton, UiTheme::kWarning, UiTheme::kWarningPressed);
     skipButton->callback(skipCallback, this);
     window.end();
     window_ = &window;

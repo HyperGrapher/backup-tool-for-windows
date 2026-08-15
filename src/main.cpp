@@ -203,9 +203,9 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
 void styleButton(Fl_Button& button, bool isSelected = false, bool isStrong = false) {
     button.box(FL_FLAT_BOX);
     button.down_box(FL_FLAT_BOX);
-    button.color(isSelected ? UiTheme::kSelection : UiTheme::kControl);
-    button.down_color(UiTheme::kPressedControl);
-    button.selection_color(UiTheme::kSelection);
+    button.color(isStrong ? UiTheme::kPrimary : (isSelected ? UiTheme::kSelection : UiTheme::kControl));
+    button.down_color(isStrong ? UiTheme::kPrimaryPressed : UiTheme::kPressedControl);
+    button.selection_color(isStrong ? UiTheme::kPrimary : UiTheme::kSelection);
     button.labelcolor(UiTheme::kText);
     button.labelfont(isSelected || isStrong ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
@@ -260,7 +260,7 @@ public:
         fl_rectf(x(), y(), w(), h());
 
         if (isSelected_) {
-            fl_color(UiTheme::kText);
+            fl_color(UiTheme::kPrimary);
             fl_rectf(x(), y() + 6, 2, h() - 12);
         }
 
@@ -531,9 +531,9 @@ private:
     void buildUi() {
         Fl::scheme("none");
         UiTheme::initializeFonts();
-        Fl::background(23, 23, 23);
-        Fl::background2(31, 31, 31);
-        Fl::foreground(242, 242, 242);
+        Fl::background(17, 19, 28);
+        Fl::background2(27, 30, 43);
+        Fl::foreground(241, 245, 249);
 
         window_ = std::make_unique<Fl_Double_Window>(kWindowWidth, kWindowHeight, "BackItUpTool");
         window_->size_range(860, 560);

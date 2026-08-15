@@ -47,8 +47,8 @@ void styleInput(Fl_Int_Input& input) {
 void styleButton(Fl_Button& button) {
     button.box(FL_FLAT_BOX);
     button.down_box(FL_FLAT_BOX);
-    button.color(UiTheme::kControl);
-    button.down_color(UiTheme::kPressedControl);
+    button.color(UiTheme::kPrimary);
+    button.down_color(UiTheme::kPrimaryPressed);
     button.labelcolor(UiTheme::kText);
     button.labelfont(UiTheme::kUiFontSemibold);
     button.labelsize(12);

@@ -57,12 +57,13 @@ constexpr int kSourceColumnWidths[] = {128, 70, 480, 100, 0};
     return key;
 }
 
-void styleButton(Fl_Button& button, bool isPrimary = false) {
+void styleButton(Fl_Button& button, bool isPrimary = false, bool isDanger = false) {
     button.box(FL_FLAT_BOX);
     button.down_box(FL_FLAT_BOX);
-    button.color(UiTheme::kControl);
-    button.down_color(UiTheme::kPressedControl);
-    button.selection_color(UiTheme::kSelection);
+    button.color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kControl));
+    button.down_color(isPrimary ? UiTheme::kPrimaryPressed
+                                : (isDanger ? UiTheme::kDangerPressed : UiTheme::kPressedControl));
+    button.selection_color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kSelection));
     button.labelcolor(UiTheme::kText);
     button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
@@ -134,7 +135,7 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
     addFoldersButton->callback(addFoldersCallback, this);
 
     removeButton_ = new Fl_Button(x + 247, y + 50, 132, 30, "Remove selected");
-    styleButton(*removeButton_);
+    styleButton(*removeButton_, false, true);
     removeButton_->callback(removeCallback, this);
     removeButton_->deactivate();
 

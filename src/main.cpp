@@ -531,9 +531,9 @@ private:
     void buildUi() {
         Fl::scheme("none");
         UiTheme::initializeFonts();
-        Fl::background(17, 19, 28);
-        Fl::background2(27, 30, 43);
-        Fl::foreground(241, 245, 249);
+        Fl::background(30, 30, 30);
+        Fl::background2(38, 38, 38);
+        Fl::foreground(243, 243, 243);
 
         window_ = std::make_unique<Fl_Double_Window>(kWindowWidth, kWindowHeight, "BackItUpTool");
         window_->size_range(860, 560);

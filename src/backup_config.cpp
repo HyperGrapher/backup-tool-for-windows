@@ -280,6 +280,21 @@ void validateBackupConfig(const BackupConfig& config) {
     }
 }
 
+void rebuildBackupRoutes(BackupConfig& config) {
+    std::vector<BackupRoute> routes;
+    routes.reserve((config.manualSources.size() + config.projectsRoots.size()) * config.destinations.size());
+    const auto addRoutes = [&](const auto& sources) {
+        for (const auto& source : sources) {
+            for (const Destination& destination : config.destinations) {
+                routes.push_back(BackupRoute{source.id, destination.id, true, true, {}});
+            }
+        }
+    };
+    addRoutes(config.manualSources);
+    addRoutes(config.projectsRoots);
+    config.routes = std::move(routes);
+}
+
 std::string serializeBackupConfig(const BackupConfig& config) {
     validateBackupConfig(config);
     Json json{

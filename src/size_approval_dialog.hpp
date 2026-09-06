@@ -8,9 +8,8 @@ class Fl_Widget;
 class Fl_Window;
 
 enum class SizeApprovalResult {
-    approveOnce,
-    approveProjectsAlways,
-    skip,
+    ignorePermanently,
+    alwaysAllow,
 };
 
 class SizeApprovalDialog final {
@@ -21,10 +20,10 @@ public:
 
 private:
     const std::vector<SizeWarning>& warnings_;
-    SizeApprovalResult result_{SizeApprovalResult::skip};
+    SizeApprovalResult result_{SizeApprovalResult::ignorePermanently};
     Fl_Window* window_{};
 
-    static void approveOnceCallback(Fl_Widget*, void* context);
-    static void approveAlwaysCallback(Fl_Widget*, void* context);
-    static void skipCallback(Fl_Widget*, void* context);
+    static void ignorePermanentlyCallback(Fl_Widget*, void* context);
+    static void alwaysAllowCallback(Fl_Widget*, void* context);
+    static void ignoreCloseCallback(Fl_Widget*, void* context);
 };

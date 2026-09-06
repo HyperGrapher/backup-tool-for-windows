@@ -57,6 +57,18 @@ TEST_CASE("Projects discovery opts in immediate children and gives empty markers
     REQUIRE(second.sources.front().id == first.sources.front().id);
 }
 
+TEST_CASE("Projects discovery finds opted-in folders at any depth") {
+    TemporaryDirectory directory;
+    directory.write("desktop-apps/backup-tool/.backup-watch", "01234567-89ab-4def-8123-456789abcdef");
+    directory.write("desktop-apps/another-folder/notes.txt", "not opted in");
+
+    const ProjectsDiscovery discovery = discoverProjects(ProjectsRoot{"projects-root", directory.path()});
+
+    REQUIRE(discovery.problems.empty());
+    REQUIRE(discovery.sources.size() == 1);
+    REQUIRE(discovery.sources.front().path == directory.path() / "desktop-apps" / "backup-tool");
+}
+
 TEST_CASE("Projects discovery reports invalid and duplicate marker UUIDs") {
     TemporaryDirectory directory;
     directory.write("Invalid/.backup-watch", "not-an-id");
@@ -92,8 +104,7 @@ TEST_CASE("project preflight excludes repositories generated trees tool metadata
     REQUIRE(preflight.eligibleSizeBytes == 160);
     REQUIRE(preflight.largeFiles.size() == 2);
     REQUIRE(preflight.doesProjectExceedThreshold);
-    REQUIRE(preflight.requiresSizeApproval(false));
-    REQUIRE_FALSE(preflight.requiresSizeApproval(true));
+    REQUIRE(preflight.requiresApproval());
 }
 
 TEST_CASE("a Projects Source that is itself a Git repository has no Eligible Items") {
@@ -107,7 +118,7 @@ TEST_CASE("a Projects Source that is itself a Git repository has no Eligible Ite
 
     REQUIRE(preflight.isGitRepository);
     REQUIRE(preflight.eligibleFileCount == 0);
-    REQUIRE_FALSE(preflight.requiresSizeApproval(false));
+    REQUIRE_FALSE(preflight.requiresApproval());
 }
 
 TEST_CASE("project contents use the same exclusions as the size check") {

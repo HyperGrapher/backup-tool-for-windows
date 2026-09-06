@@ -43,7 +43,9 @@ private:
     struct Registration;
 
     void watchLoop();
-    void issueRead(Registration& registration);
+    [[nodiscard]] bool openRegistration(Registration& registration);
+    [[nodiscard]] bool issueRead(Registration& registration);
+    void closeRegistration(Registration& registration);
 
     void* completionPort_{};
     std::vector<std::unique_ptr<Registration>> registrations_;
@@ -51,4 +53,5 @@ private:
     ChangeCallback callback_;
     std::thread thread_;
     std::atomic_bool isRunning_{};
+    std::atomic_size_t activeRegistrationCount_{};
 };

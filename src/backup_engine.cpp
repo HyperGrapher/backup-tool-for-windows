@@ -7,7 +7,10 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <future>
 #include <iomanip>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -22,6 +25,16 @@ namespace {
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
+    std::string text;
+    text.reserve(bytes.size());
+    for (const char8_t byte : bytes) {
+        text.push_back(static_cast<char>(byte));
+    }
+    return text;
+}
+
+[[nodiscard]] std::string pathToGenericUtf8(const std::filesystem::path& path) {
+    const std::u8string bytes = path.generic_u8string();
     std::string text;
     text.reserve(bytes.size());
     for (const char8_t byte : bytes) {
@@ -135,6 +148,54 @@ void runTarZip(const std::filesystem::path& source, const std::filesystem::path&
     }
 }
 
+void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path& archivePath) {
+    const ProjectContents contents = collectProjectContents(source);
+    const std::filesystem::path listPath = std::filesystem::temp_directory_path() /
+                                           (L"BackItUpTool-" + std::filesystem::path{generateUuid()}.wstring() +
+                                            L".txt");
+    try {
+        std::ofstream list{listPath, std::ios::binary | std::ios::trunc};
+        if (!list) {
+            throw std::runtime_error("Unable to create the Project snapshot file list.");
+        }
+        for (const EligibleProjectFile& file : contents.files) {
+            list << pathToGenericUtf8(source.path.filename() / file.relativePath) << '\n';
+        }
+        list.close();
+        if (!list) {
+            throw std::runtime_error("Unable to write the Project snapshot file list.");
+        }
+
+        std::wstring command = L"tar.exe -a -c -f " + quoteArgument(archivePath) + L" -C " +
+                               quoteArgument(source.path.parent_path()) + L" -T " + quoteArgument(listPath);
+        std::vector<wchar_t> writable(command.begin(), command.end());
+        writable.push_back(L'\0');
+        STARTUPINFOW startup{};
+        startup.cb = sizeof(startup);
+        startup.dwFlags = STARTF_USESHOWWINDOW;
+        startup.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION process{};
+        if (CreateProcessW(nullptr, writable.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
+                           &startup, &process) == FALSE) {
+            throw std::runtime_error("Unable to start Windows tar for the Project ZIP snapshot.");
+        }
+        WaitForSingleObject(process.hProcess, INFINITE);
+        DWORD exitCode{};
+        const BOOL receivedCode = GetExitCodeProcess(process.hProcess, &exitCode);
+        CloseHandle(process.hThread);
+        CloseHandle(process.hProcess);
+        if (receivedCode == FALSE || exitCode != 0) {
+            throw std::runtime_error("Project ZIP snapshot creation failed.");
+        }
+    } catch (...) {
+        std::error_code ignoredError;
+        std::filesystem::remove(listPath, ignoredError);
+        throw;
+    }
+    std::error_code ignoredError;
+    std::filesystem::remove(listPath, ignoredError);
+}
+
 [[nodiscard]] std::string utcFilenameStamp() {
     const std::time_t now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm utc{};
@@ -185,6 +246,32 @@ void pruneSnapshots(const BackupRoute& route, std::string_view sourceId, std::st
     }
 }
 
+[[nodiscard]] bool shouldCopyFile(const std::filesystem::path& source, const std::filesystem::path& target) {
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(target, error) || error) {
+        return true;
+    }
+    const std::uintmax_t sourceSize = std::filesystem::file_size(source, error);
+    if (error) {
+        throw std::runtime_error("Unable to read a Project source file size.");
+    }
+    const std::uintmax_t targetSize = std::filesystem::file_size(target, error);
+    if (error || sourceSize != targetSize) {
+        return true;
+    }
+    const auto sourceWriteTime = std::filesystem::last_write_time(source, error);
+    if (error) {
+        throw std::runtime_error("Unable to read a Project source timestamp.");
+    }
+    const auto targetWriteTime = std::filesystem::last_write_time(target, error);
+    if (error) {
+        return true;
+    }
+    const auto difference = sourceWriteTime > targetWriteTime ? sourceWriteTime - targetWriteTime
+                                                               : targetWriteTime - sourceWriteTime;
+    return difference > std::chrono::seconds{2};
+}
+
 void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::path& destination) {
     const ProjectContents contents = collectProjectContents(source);
     std::filesystem::create_directories(destination);
@@ -193,9 +280,18 @@ void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::
         const std::filesystem::path normalizedRelativePath = file.relativePath.lexically_normal();
         eligiblePaths.insert(normalizedRelativePath);
         const std::filesystem::path target = destination / normalizedRelativePath;
+        const std::filesystem::path sourcePath = source.path / normalizedRelativePath;
+        if (!shouldCopyFile(sourcePath, target)) {
+            continue;
+        }
         std::filesystem::create_directories(target.parent_path());
-        std::filesystem::copy_file(source.path / normalizedRelativePath, target,
+        std::filesystem::copy_file(sourcePath, target,
                                    std::filesystem::copy_options::overwrite_existing);
+        std::error_code timestampError;
+        const auto sourceWriteTime = std::filesystem::last_write_time(sourcePath, timestampError);
+        if (!timestampError) {
+            std::filesystem::last_write_time(target, sourceWriteTime, timestampError);
+        }
     }
 
     std::error_code iterationError;
@@ -260,7 +356,12 @@ std::vector<MirrorPlan> BackupEngine::previewMirrors(
         if (destination == config.destinations.end()) {
             throw std::runtime_error("Route has an unavailable Destination.");
         }
-        const std::filesystem::path availableDestinationRoot = destinationRoot(*destination);
+        std::filesystem::path availableDestinationRoot;
+        try {
+            availableDestinationRoot = destinationRoot(*destination);
+        } catch (const std::exception&) {
+            continue;
+        }
         const auto manualSource = std::ranges::find(config.manualSources, route.sourceId, &ManualSource::id);
         if (manualSource != config.manualSources.end()) {
             if (!std::filesystem::exists(manualSource->path)) {
@@ -329,19 +430,60 @@ std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& 
     return pendingPlans;
 }
 
+std::vector<MirrorPlan> BackupEngine::previewDueSnapshots(
+    const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+    const StateStore& stateStore) const {
+    BackupConfig snapshotConfig = config;
+    std::erase_if(snapshotConfig.routes, [](const BackupRoute& route) {
+        return !route.areSnapshotsEnabled;
+    });
+    for (BackupRoute& route : snapshotConfig.routes) {
+        route.isMirrorEnabled = true;
+    }
+
+    std::vector<MirrorPlan> duePlans;
+    for (const BackupRoute& snapshotRoute : snapshotConfig.routes) {
+        BackupConfig singleRouteConfig = snapshotConfig;
+        singleRouteConfig.routes = {snapshotRoute};
+        try {
+            for (MirrorPlan& plan : previewMirrors(singleRouteConfig, projectsSources)) {
+                const auto configuredRoute = std::ranges::find_if(config.routes, [&](const BackupRoute& candidate) {
+                    return candidate.sourceId == plan.routeSourceId && candidate.destinationId == plan.destinationId;
+                });
+                if (configuredRoute != config.routes.end() &&
+                    isSnapshotDue(stateStore.latestSnapshotUtc(plan.sourceId, plan.destinationId),
+                                  configuredRoute->snapshotPolicy.intervalHours)) {
+                    duePlans.push_back(std::move(plan));
+                }
+            }
+        } catch (const std::exception&) {
+            // An unavailable Source or Destination is retried by the next scheduled check.
+        }
+    }
+    return duePlans;
+}
+
 std::vector<SizeWarning> BackupEngine::findSizeWarnings(const BackupConfig& config,
                                                         const std::vector<MirrorPlan>& plans,
                                                         const StateStore& stateStore) const {
     std::vector<SizeWarning> warnings;
+    std::map<std::string, ProjectPreflight> preflights;
+    std::set<std::string> warnedSources;
     for (const MirrorPlan& plan : plans) {
         if (plan.isProjectsSource) {
-            const ProjectsSource source{plan.sourceId, plan.source};
-            const ProjectPreflight preflight = scanProject(source, config.settings);
-            if (!preflight.requiresSizeApproval(stateStore.hasPermanentSizeApproval(plan.sourceId))) {
+            const std::optional<ProjectBackupDecision> decision = stateStore.projectBackupDecision(plan.sourceId);
+            if (decision.has_value() || !warnedSources.insert(plan.sourceId).second) {
                 continue;
             }
-            warnings.push_back(SizeWarning{plan.sourceId, plan.destinationId, plan.source,
-                                           preflight.eligibleSizeBytes, preflight.largeFiles, true});
+            const auto [preflight, inserted] = preflights.try_emplace(plan.sourceId);
+            if (inserted) {
+                preflight->second = scanProject(ProjectsSource{plan.sourceId, plan.source}, config.settings);
+            }
+            if (!preflight->second.requiresApproval()) {
+                continue;
+            }
+            warnings.push_back(SizeWarning{plan.sourceId, plan.source, preflight->second.eligibleSizeBytes,
+                                           preflight->second.largeFiles});
             continue;
         }
     }
@@ -351,8 +493,14 @@ std::vector<SizeWarning> BackupEngine::findSizeWarnings(const BackupConfig& conf
 BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
                                           StateStore& stateStore, const std::filesystem::path& logDirectory) const {
     std::filesystem::create_directories(logDirectory);
-    BackupRunSummary summary;
+    std::map<std::string, std::vector<MirrorPlan>> plansByDestination;
     for (const MirrorPlan& plan : plans) {
+        plansByDestination[plan.destinationId].push_back(plan);
+    }
+
+    const auto runDestination = [this, &config, &stateStore, &logDirectory](const std::vector<MirrorPlan>& destinationPlans) {
+        BackupRunSummary summary;
+        for (const MirrorPlan& plan : destinationPlans) {
         const std::string attemptTime = utcNow();
         stateStore.beginRouteAttempt(plan.sourceId, plan.destinationId, attemptTime);
         try {
@@ -381,24 +529,53 @@ BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std:
             stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.succeeded;
-            const auto route = std::ranges::find_if(config.routes, [&](const BackupRoute& candidate) {
-                return candidate.sourceId == plan.routeSourceId && candidate.destinationId == plan.destinationId;
-            });
-            const auto destination = std::ranges::find(config.destinations, plan.destinationId, &Destination::id);
-            if (route != config.routes.end() && destination != config.destinations.end() && route->areSnapshotsEnabled) {
-                try {
-                    createDueSnapshot(*route, plan, *destination, stateStore);
-                } catch (const std::exception& error) {
-                    const std::string snapshotError = "Snapshot failed for " + pathToUtf8(plan.source) + ": " + error.what();
-                    stateStore.appendActivity(utcNow(), "error", snapshotError, plan.sourceId, plan.destinationId);
-                    summary.messages.push_back(snapshotError);
-                    ++summary.failed;
-                }
-            }
         } catch (const std::exception& error) {
             const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + ": " + error.what();
             stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
             stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
+            summary.messages.push_back(message);
+            ++summary.failed;
+        }
+        }
+        return summary;
+    };
+
+    std::vector<std::future<BackupRunSummary>> runs;
+    runs.reserve(plansByDestination.size());
+    for (auto& [destinationId, destinationPlans] : plansByDestination) {
+        static_cast<void>(destinationId);
+        runs.push_back(std::async(std::launch::async, runDestination, std::move(destinationPlans)));
+    }
+
+    BackupRunSummary summary;
+    for (std::future<BackupRunSummary>& run : runs) {
+        BackupRunSummary destinationSummary = run.get();
+        summary.succeeded += destinationSummary.succeeded;
+        summary.failed += destinationSummary.failed;
+        summary.messages.insert(summary.messages.end(),
+                                std::make_move_iterator(destinationSummary.messages.begin()),
+                                std::make_move_iterator(destinationSummary.messages.end()));
+    }
+    return summary;
+}
+
+BackupRunSummary BackupEngine::runSnapshots(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
+                                            StateStore& stateStore) const {
+    BackupRunSummary summary;
+    for (const MirrorPlan& plan : plans) {
+        try {
+            const auto route = std::ranges::find_if(config.routes, [&](const BackupRoute& candidate) {
+                return candidate.sourceId == plan.routeSourceId && candidate.destinationId == plan.destinationId;
+            });
+            const auto destination = std::ranges::find(config.destinations, plan.destinationId, &Destination::id);
+            if (route == config.routes.end() || destination == config.destinations.end() || !route->areSnapshotsEnabled) {
+                continue;
+            }
+            createDueSnapshot(*route, plan, *destination, stateStore);
+            ++summary.succeeded;
+        } catch (const std::exception& error) {
+            const std::string message = "Snapshot failed for " + pathToUtf8(plan.source) + ": " + error.what();
+            stateStore.appendActivity(utcNow(), "error", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.failed;
         }
@@ -418,7 +595,11 @@ void BackupEngine::createDueSnapshot(const BackupRoute& route, const MirrorPlan&
     const std::filesystem::path archivePath = snapshotFolder /
                                               (plan.source.filename().wstring() + L"_" +
                                                std::filesystem::path{utcFilenameStamp()}.wstring() + L".zip");
-    runTarZip(plan.isProjectsSource ? plan.destination : plan.source, archivePath);
+    if (plan.isProjectsSource) {
+        runProjectTarZip(ProjectsSource{plan.sourceId, plan.source}, archivePath);
+    } else {
+        runTarZip(plan.source, archivePath);
+    }
     stateStore.recordSnapshot(plan.sourceId, plan.destinationId, utcNow(), archivePath,
                               std::filesystem::file_size(archivePath));
     pruneSnapshots(route, plan.sourceId, plan.destinationId, stateStore);

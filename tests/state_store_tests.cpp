@@ -84,6 +84,20 @@ TEST_CASE("a change during a running mirror remains pending after success") {
     REQUIRE(state->lastSuccessUtc == "2026-08-13T10:01:00Z");
 }
 
+TEST_CASE("interrupted routes are pending after recovery") {
+    TemporaryDirectory directory;
+    StateStore stateStore{directory.path() / "state.db"};
+    stateStore.markRouteDirty("source-one", "destination-one");
+    stateStore.beginRouteAttempt("source-one", "destination-one", "2026-09-06T10:00:00Z");
+
+    stateStore.recoverInterruptedRoutes();
+
+    const auto recovered = stateStore.routeState("source-one", "destination-one");
+    REQUIRE(recovered.has_value());
+    REQUIRE(recovered->status == RouteStatus::pending);
+    REQUIRE(recovered->isDirty);
+}
+
 TEST_CASE("a quiet successful mirror clears pending work") {
     TemporaryDirectory directory;
     StateStore store{directory.path() / "state.db"};
@@ -98,13 +112,15 @@ TEST_CASE("a quiet successful mirror clears pending work") {
     REQUIRE_FALSE(state->isDirty);
 }
 
-TEST_CASE("permanent project size approval can be granted and revoked") {
+TEST_CASE("Project backup decisions persist") {
     TemporaryDirectory directory;
     StateStore store{directory.path() / "state.db"};
 
-    REQUIRE_FALSE(store.hasPermanentSizeApproval("project-one"));
-    store.setPermanentSizeApproval("project-one", "2026-08-10T16:00:00Z");
-    REQUIRE(store.hasPermanentSizeApproval("project-one"));
-    store.clearPermanentSizeApproval("project-one");
-    REQUIRE_FALSE(store.hasPermanentSizeApproval("project-one"));
+    REQUIRE_FALSE(store.projectBackupDecision("project-one").has_value());
+    store.setProjectBackupDecision("project-one", ProjectBackupDecision::alwaysAllow,
+                                   "2026-08-10T16:00:00Z");
+    REQUIRE(store.projectBackupDecision("project-one") == ProjectBackupDecision::alwaysAllow);
+    store.setProjectBackupDecision("project-one", ProjectBackupDecision::ignorePermanently,
+                                   "2026-08-10T16:01:00Z");
+    REQUIRE(store.projectBackupDecision("project-one") == ProjectBackupDecision::ignorePermanently);
 }

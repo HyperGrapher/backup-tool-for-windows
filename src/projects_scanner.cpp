@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -107,6 +108,11 @@ constexpr wchar_t kIgnoreFileName[] = L".backup-ignore";
     return true;
 }
 
+[[nodiscard]] bool isAlwaysExcludedDirectory(std::wstring_view name) {
+    return equalsIgnoreCase(name, L"build") || equalsIgnoreCase(name, L"node_modules") ||
+           equalsIgnoreCase(name, L".git");
+}
+
 [[nodiscard]] bool isReparsePoint(const std::filesystem::path& path) {
     const DWORD attributes = GetFileAttributesW(path.c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES) {
@@ -150,8 +156,81 @@ constexpr wchar_t kIgnoreFileName[] = L".backup-ignore";
 
 }  // namespace
 
-bool ProjectPreflight::requiresSizeApproval(bool isPermanentlyApproved) const noexcept {
-    return !isPermanentlyApproved && (!largeFiles.empty() || doesProjectExceedThreshold);
+struct ProjectChangeFilter::Implementation {
+    explicit Implementation(std::filesystem::path root) : sourceRoot(std::move(root)) {
+        refreshIgnoreRules();
+    }
+
+    void refreshIgnoreRules() {
+        const std::filesystem::path ignorePath = sourceRoot / kIgnoreFileName;
+        std::error_code error;
+        const bool exists = std::filesystem::exists(ignorePath, error);
+        if (error) {
+            return;
+        }
+        std::optional<std::filesystem::file_time_type> writeTime;
+        if (exists) {
+            writeTime = std::filesystem::last_write_time(ignorePath, error);
+            if (error) {
+                return;
+            }
+        }
+        if (writeTime == ignoreWriteTime) {
+            return;
+        }
+        try {
+            ignoreRules = IgnoreRules::load(ignorePath);
+            ignoreWriteTime = writeTime;
+        } catch (const std::exception&) {
+            // An invalid rule file must still trigger a backup attempt that reports the problem.
+        }
+    }
+
+    std::filesystem::path sourceRoot;
+    IgnoreRules ignoreRules;
+    std::optional<std::filesystem::file_time_type> ignoreWriteTime;
+};
+
+ProjectChangeFilter::ProjectChangeFilter(std::filesystem::path sourceRoot)
+    : implementation_(std::make_unique<Implementation>(std::move(sourceRoot))) {}
+
+ProjectChangeFilter::~ProjectChangeFilter() = default;
+
+bool ProjectChangeFilter::operator()(const std::filesystem::path& relativePath) {
+    implementation_->refreshIgnoreRules();
+    const std::filesystem::path filename = relativePath.filename();
+    if (equalsIgnoreCase(filename.native(), kIgnoreFileName) || equalsIgnoreCase(filename.native(), L".git")) {
+        return true;
+    }
+    if (equalsIgnoreCase(filename.native(), kMarkerName)) {
+        return false;
+    }
+
+    std::filesystem::path ancestor;
+    auto component = relativePath.begin();
+    while (component != relativePath.end()) {
+        const bool isLast = std::next(component) == relativePath.end();
+        if (!isLast) {
+            if (isAlwaysExcludedDirectory(component->native())) {
+                return false;
+            }
+            ancestor /= *component;
+            std::error_code gitError;
+            if (std::filesystem::exists(implementation_->sourceRoot / ancestor / L".git", gitError) && !gitError) {
+                return false;
+            }
+        }
+        ++component;
+    }
+
+    std::error_code typeError;
+    const bool isDirectory = std::filesystem::is_directory(implementation_->sourceRoot / relativePath, typeError);
+    return !implementation_->ignoreRules.isIgnored(relativePath, isDirectory) &&
+           !implementation_->ignoreRules.isIgnored(relativePath, true);
+}
+
+bool ProjectPreflight::requiresApproval() const noexcept {
+    return !largeFiles.empty() || doesProjectExceedThreshold;
 }
 
 ProjectsDiscovery discoverProjects(const ProjectsRoot& root) {
@@ -165,14 +244,21 @@ ProjectsDiscovery discoverProjects(const ProjectsRoot& root) {
     ProjectsDiscovery discovery;
     std::unordered_set<std::string> sourceIds;
     std::error_code iterationError;
-    for (std::filesystem::directory_iterator iterator{root.path, iterationError}, end; iterator != end;
+    for (std::filesystem::recursive_directory_iterator iterator{
+             root.path, std::filesystem::directory_options::none, iterationError},
+         end; iterator != end;
          iterator.increment(iterationError)) {
         if (iterationError) {
             throw std::runtime_error("Unable to enumerate Projects Root.");
         }
         const std::filesystem::directory_entry& entry = *iterator;
         std::error_code typeError;
-        if (!entry.is_directory(typeError) || typeError || isReparsePoint(entry.path())) {
+        if (!entry.is_directory(typeError) || typeError) {
+            continue;
+        }
+        if (isReparsePoint(entry.path()) || isAlwaysExcludedDirectory(entry.path().filename().native()) ||
+            containsGitMarker(entry.path())) {
+            iterator.disable_recursion_pending();
             continue;
         }
         const std::filesystem::path markerPath = entry.path() / kMarkerName;
@@ -196,6 +282,7 @@ ProjectsDiscovery discoverProjects(const ProjectsRoot& root) {
                 throw std::runtime_error("Duplicate .backup-watch UUID within this Projects Root.");
             }
             discovery.sources.push_back(ProjectsSource{std::move(id), entry.path()});
+            iterator.disable_recursion_pending();
         } catch (const std::exception& error) {
             discovery.problems.push_back({entry.path(), error.what()});
         }
@@ -230,25 +317,11 @@ ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<Project
 }
 
 bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath) {
-    auto component = relativePath.begin();
-    if (component == relativePath.end()) {
-        return false;
-    }
-
-    ++component;
-    if (component == relativePath.end()) {
-        return true;
-    }
-
-    std::wstring childName = component->native();
-    std::ranges::transform(childName, childName.begin(), [](wchar_t character) {
+    std::wstring filename = relativePath.filename().native();
+    std::ranges::transform(filename, filename.begin(), [](wchar_t character) {
         return static_cast<wchar_t>(std::towlower(character));
     });
-    ++component;
-    if (component != relativePath.end()) {
-        return false;
-    }
-    return childName == L".backup-watch" || childName == L".git";
+    return filename == L".backup-watch" || filename == L".git";
 }
 
 ProjectContents collectProjectContents(const ProjectsSource& source) {

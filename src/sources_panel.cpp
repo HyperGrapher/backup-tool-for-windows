@@ -13,7 +13,6 @@
 
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
-#include <FL/Fl_Choice.H>
 #include <FL/Fl_Input.H>
 #include <FL/Fl_Multi_Browser.H>
 #include <FL/fl_ask.H>
@@ -139,34 +138,13 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
     removeButton_->callback(removeCallback, this);
     removeButton_->deactivate();
 
-    addLabel(x + 16, y + 88, 60, 30, "Back up to", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    destinationChoice_ = new Fl_Choice(x + 82, y + 88, 230, 30);
-    destinationChoice_->box(FL_BORDER_BOX);
-    destinationChoice_->color(UiTheme::kSurface);
-    destinationChoice_->textcolor(UiTheme::kText);
-    destinationChoice_->selection_color(UiTheme::kSelection);
-    destinationChoice_->textfont(UiTheme::kUiFont);
-    destinationChoice_->textsize(12);
-    destinationChoice_->callback(destinationChoiceCallback, this);
-
-    connectButton_ = new Fl_Button(x + 320, y + 88, 138, 30, "Connect selected");
-    styleButton(*connectButton_, true);
-    connectButton_->callback(connectCallback, this);
-    connectButton_->deactivate();
-
-    disconnectButton_ = new Fl_Button(x + 466, y + 88, 150, 30, "Disconnect selected");
-    styleButton(*disconnectButton_);
-    disconnectButton_->callback(disconnectCallback, this);
-    disconnectButton_->deactivate();
-
-    addLabel(x + 20, y + 128, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 148, y + 128, 66, 22, "Type", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 218, y + 128, 470, 22, "Path", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 698, y + 128, 100, 22, "Destinations", 11, UiTheme::kSecondaryText,
+    addLabel(x + 20, y + 90, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 148, y + 90, 66, 22, "Type", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 218, y + 90, 470, 22, "Path", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 698, y + 90, 100, 22, "Destinations", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
 
-    sourceBrowser_ = new Fl_Multi_Browser(x + 16, y + 150, width - 32, height - 182);
+    sourceBrowser_ = new Fl_Multi_Browser(x + 16, y + 112, width - 32, height - 144);
     sourceBrowser_->box(FL_BORDER_BOX);
     sourceBrowser_->color(UiTheme::kSurface);
     sourceBrowser_->textcolor(UiTheme::kText);
@@ -187,7 +165,6 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
 }
 
 void SourcesPanel::refresh() {
-    refreshDestinationChoices();
     const std::string filter = lowercaseAscii(searchInput_->value());
     visibleSourceIndexes_.clear();
     sourceBrowser_->clear();
@@ -201,11 +178,8 @@ void SourcesPanel::refresh() {
             continue;
         }
 
-        const auto routeCount = std::count_if(config_.routes.begin(), config_.routes.end(), [&](const BackupRoute& route) {
-            return route.sourceId == source.id;
-        });
         const std::string line = std::string{UiTheme::statusText(sourceStatus(source, config_, stateStore_))} + '\t' +
-                                 typeText + '\t' + pathText + '\t' + std::to_string(routeCount);
+                                 typeText + '\t' + pathText + '\t' + std::to_string(config_.destinations.size());
         sourceBrowser_->add(line.c_str());
         visibleSourceIndexes_.push_back(index);
     }
@@ -229,23 +203,11 @@ void SourcesPanel::removeCallback(Fl_Widget*, void* context) {
     static_cast<SourcesPanel*>(context)->removeSelectedSources();
 }
 
-void SourcesPanel::connectCallback(Fl_Widget*, void* context) {
-    static_cast<SourcesPanel*>(context)->connectSelectedSources();
-}
-
-void SourcesPanel::disconnectCallback(Fl_Widget*, void* context) {
-    static_cast<SourcesPanel*>(context)->disconnectSelectedSources();
-}
-
 void SourcesPanel::searchCallback(Fl_Widget*, void* context) {
     static_cast<SourcesPanel*>(context)->refresh();
 }
 
 void SourcesPanel::selectionCallback(Fl_Widget*, void* context) {
-    static_cast<SourcesPanel*>(context)->refreshSelectionState();
-}
-
-void SourcesPanel::destinationChoiceCallback(Fl_Widget*, void* context) {
     static_cast<SourcesPanel*>(context)->refreshSelectionState();
 }
 
@@ -327,97 +289,6 @@ void SourcesPanel::removeSelectedSources() {
     }
 }
 
-void SourcesPanel::connectSelectedSources() {
-    const std::vector<std::string> sourceIds = selectedSourceIds();
-    const int destinationIndex = destinationChoice_->value();
-    if (sourceIds.empty() || destinationIndex < 0 ||
-        static_cast<std::size_t>(destinationIndex) >= config_.destinations.size()) {
-        return;
-    }
-
-    try {
-        BackupConfig updatedConfig = config_;
-        const std::string& destinationId =
-            updatedConfig.destinations.at(static_cast<std::size_t>(destinationIndex)).id;
-        std::size_t connectedCount = 0;
-        for (const std::string& sourceId : sourceIds) {
-            const bool routeExists = std::ranges::any_of(updatedConfig.routes, [&](const BackupRoute& route) {
-                return route.sourceId == sourceId && route.destinationId == destinationId;
-            });
-            if (routeExists) {
-                continue;
-            }
-            updatedConfig.routes.push_back(BackupRoute{sourceId, destinationId, true, true, {}});
-            ++connectedCount;
-        }
-
-        if (connectedCount == 0) {
-            resultSummary_->copy_label("The selected Sources are already connected to that Destination.");
-            return;
-        }
-        configStore_.save(updatedConfig);
-        config_ = std::move(updatedConfig);
-        configChangedCallback_();
-        refresh();
-        const std::string result = "Connected " + std::to_string(connectedCount) + " Sources to " +
-                                   config_.destinations.at(static_cast<std::size_t>(destinationIndex)).name + '.';
-        resultSummary_->copy_label(result.c_str());
-    } catch (const std::exception& error) {
-        reportError(error);
-    }
-}
-
-void SourcesPanel::disconnectSelectedSources() {
-    const std::vector<std::string> sourceIds = selectedSourceIds();
-    const int destinationIndex = destinationChoice_->value();
-    if (sourceIds.empty() || destinationIndex < 0 ||
-        static_cast<std::size_t>(destinationIndex) >= config_.destinations.size()) {
-        return;
-    }
-
-    const std::unordered_set<std::string> selectedIds(sourceIds.begin(), sourceIds.end());
-    try {
-        BackupConfig updatedConfig = config_;
-        const Destination& destination = updatedConfig.destinations.at(static_cast<std::size_t>(destinationIndex));
-        const std::size_t previousRouteCount = updatedConfig.routes.size();
-        std::erase_if(updatedConfig.routes, [&](const BackupRoute& route) {
-            return route.destinationId == destination.id && selectedIds.contains(route.sourceId);
-        });
-        const std::size_t disconnectedCount = previousRouteCount - updatedConfig.routes.size();
-        if (disconnectedCount == 0) {
-            resultSummary_->copy_label("The selected Sources are not connected to that Destination.");
-            return;
-        }
-
-        const std::string destinationName = destination.name;
-        configStore_.save(updatedConfig);
-        config_ = std::move(updatedConfig);
-        configChangedCallback_();
-        refresh();
-        const std::string result = "Disconnected " + std::to_string(disconnectedCount) + " Sources from " +
-                                   destinationName + '.';
-        resultSummary_->copy_label(result.c_str());
-    } catch (const std::exception& error) {
-        reportError(error);
-    }
-}
-
-void SourcesPanel::refreshDestinationChoices() {
-    const int previousSelection = destinationChoice_->value();
-    destinationChoice_->clear();
-    for (const Destination& destination : config_.destinations) {
-        destinationChoice_->add(destination.name.c_str());
-    }
-    if (config_.destinations.empty()) {
-        destinationChoice_->add("Add a Destination first");
-        destinationChoice_->value(0);
-        return;
-    }
-
-    const int lastIndex = static_cast<int>(config_.destinations.size() - 1);
-    destinationChoice_->value(std::clamp(previousSelection, 0, lastIndex));
-}
-
 std::vector<std::string> SourcesPanel::selectedSourceIds() const {
     std::vector<std::string> sourceIds;
     for (int line = 1; line <= sourceBrowser_->size(); ++line) {
@@ -444,14 +315,6 @@ void SourcesPanel::refreshSelectionState() {
         removeButton_->deactivate();
     }
 
-    const bool hasDestination = !config_.destinations.empty() && destinationChoice_->value() >= 0;
-    if (hasSelection && hasDestination) {
-        connectButton_->activate();
-        disconnectButton_->activate();
-    } else {
-        connectButton_->deactivate();
-        disconnectButton_->deactivate();
-    }
 }
 
 void SourcesPanel::reportError(const std::exception& error) const {

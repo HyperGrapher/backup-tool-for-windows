@@ -183,7 +183,9 @@ void configureLogging(const std::filesystem::path& dataDirectory) {
 [[nodiscard]] BackupConfig loadOrCreateConfig(const ConfigStore& store) {
     const bool doesConfigExist = std::filesystem::exists(store.path());
     BackupConfig config = store.load();
-    if (!doesConfigExist) {
+    const std::vector<BackupRoute> previousRoutes = config.routes;
+    rebuildBackupRoutes(config);
+    if (!doesConfigExist || config.routes != previousRoutes) {
         store.save(config);
     }
     return config;
@@ -338,10 +340,6 @@ public:
     }
 };
 
-[[nodiscard]] std::string sizeWarningKey(std::string_view sourceId, std::string_view destinationId) {
-    return std::string{sourceId} + '\n' + std::string{destinationId};
-}
-
 [[nodiscard]] std::string projectsRootWatchId(std::string_view rootId) {
     return std::string{kProjectsRootWatchPrefix} + std::string{rootId};
 }
@@ -362,7 +360,7 @@ public:
             throw std::runtime_error("Unable to create the notification-area icon.");
         }
         restartSourceWatcher();
-        initializeRouteStates();
+        initializeRouteStates(true);
         updateGlobalStatus();
         Fl::add_timeout(1.0, automaticWorkTimerCallback, this);
         spdlog::info("Application started in the notification area");
@@ -423,6 +421,14 @@ private:
         std::string sourceId;
     };
 
+    struct BackupPreparation {
+        std::vector<MirrorPlan> mirrorPlans;
+        std::vector<MirrorPlan> snapshotPlans;
+        std::vector<SizeWarning> sizeWarnings;
+        std::optional<std::string> error;
+        bool pendingOnly{};
+    };
+
     std::filesystem::path dataDirectory_;
     ConfigStore configStore_;
     StateStore stateStore_;
@@ -450,10 +456,10 @@ private:
     BackupEngine backupEngine_;
     SourceWatcher sourceWatcher_;
     std::vector<ConfiguredProjectsSource> projectsSources_;
-    std::unordered_set<std::string> deferredSizeWarnings_;
     std::thread backupThread_;
     std::mutex backupResultMutex_;
     std::optional<BackupRunSummary> backupResult_;
+    std::optional<BackupPreparation> backupPreparation_;
     bool isBackupRunning_{};
     bool isRunning_{true};
     bool hasPositionedWindow_{};
@@ -515,6 +521,10 @@ private:
 
     static void mirrorFinishedAwake(void* data) {
         static_cast<App*>(data)->finishMirrorRun();
+    }
+
+    static void backupPreparedAwake(void* data) {
+        static_cast<App*>(data)->finishBackupPreparation();
     }
 
     static void sourceChangedAwake(void* data) {
@@ -723,7 +733,8 @@ private:
     }
 
     void handleConfigChanged() {
-        deferredSizeWarnings_.clear();
+        rebuildBackupRoutes(config_);
+        configStore_.save(config_);
         sourcesPanel_->refresh();
         projectsPanel_->refresh();
         destinationsPanel_->refresh();
@@ -736,7 +747,10 @@ private:
         updateGlobalStatus();
     }
 
-    void initializeRouteStates() {
+    void initializeRouteStates(bool shouldRequeueExistingRoutes = false) {
+        if (shouldRequeueExistingRoutes) {
+            stateStore_.recoverInterruptedRoutes();
+        }
         for (const BackupRoute& route : config_.routes) {
             if (!route.isMirrorEnabled) {
                 continue;
@@ -745,14 +759,20 @@ private:
                 return source.id == route.sourceId;
             });
             if (isManualSource) {
-                if (!stateStore_.routeState(route.sourceId, route.destinationId).has_value()) {
+                if (shouldRequeueExistingRoutes ||
+                    !stateStore_.routeState(route.sourceId, route.destinationId).has_value()) {
                     stateStore_.markRouteDirty(route.sourceId, route.destinationId);
                 }
                 continue;
             }
             for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
+                if (stateStore_.projectBackupDecision(projectsSource.source.id) ==
+                    ProjectBackupDecision::ignorePermanently) {
+                    continue;
+                }
                 if (projectsSource.rootId == route.sourceId &&
-                    !stateStore_.routeState(projectsSource.source.id, route.destinationId).has_value()) {
+                    (shouldRequeueExistingRoutes ||
+                     !stateStore_.routeState(projectsSource.source.id, route.destinationId).has_value())) {
                     stateStore_.markRouteDirty(projectsSource.source.id, route.destinationId);
                 }
             }
@@ -777,10 +797,18 @@ private:
             watchTargets.push_back(std::move(target));
         }
         for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
+            if (stateStore_.projectBackupDecision(projectsSource.source.id) ==
+                ProjectBackupDecision::ignorePermanently) {
+                continue;
+            }
             SourceWatchTarget target;
             target.sourceId = projectsSource.source.id;
             target.directory = projectsSource.source.path;
             target.isRecursive = true;
+            auto changeFilter = std::make_shared<ProjectChangeFilter>(projectsSource.source.path);
+            target.isRelevantChange = [changeFilter](const std::filesystem::path& relativePath) {
+                return (*changeFilter)(relativePath);
+            };
             watchTargets.push_back(std::move(target));
         }
         sourceWatcher_.start(watchTargets, config_.settings.debounceSeconds, [this](const std::string& sourceId) {
@@ -813,10 +841,9 @@ private:
     }
 
     void markSourceDirty(const std::string& sourceId) {
-        const std::string deferredPrefix = sourceId + '\n';
-        std::erase_if(deferredSizeWarnings_, [&](const std::string& key) {
-            return key.starts_with(deferredPrefix);
-        });
+        if (stateStore_.projectBackupDecision(sourceId) == ProjectBackupDecision::ignorePermanently) {
+            return;
+        }
         std::size_t markedCount = 0;
         for (const BackupRoute& route : config_.routes) {
             bool matchesSource = route.sourceId == sourceId;
@@ -864,15 +891,6 @@ private:
         if (isBackupRunning_ || now < nextAutomaticAttempt_) {
             return;
         }
-        const bool hasActionablePendingWork = std::ranges::any_of(
-            stateStore_.routeStates(), [&](const RouteRuntimeState& state) {
-                return state.isDirty && !deferredSizeWarnings_.contains(
-                                            sizeWarningKey(state.sourceId, state.destinationId));
-            });
-        if (!hasActionablePendingWork) {
-            nextAutomaticAttempt_ = std::chrono::steady_clock::time_point::max();
-            return;
-        }
         startMirrorRun(true);
     }
 
@@ -882,57 +900,7 @@ private:
         }
         try {
             if (!pendingOnly) {
-                deferredSizeWarnings_.clear();
-            }
-            std::vector<MirrorPlan> plans =
-                pendingOnly ? backupEngine_.previewPendingMirrors(config_, projectsSources_, stateStore_)
-                            : backupEngine_.previewMirrors(config_, projectsSources_);
-            if (plans.empty()) {
-                if (pendingOnly) {
-                    footerStatus_->copy_label("Backup is pending. Waiting for a Source or Destination.");
-                    nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
-                } else {
-                    footerStatus_->copy_label("No available Mirror routes are configured.");
-                }
-                return;
-            }
-            const std::vector<SizeWarning> sizeWarnings = backupEngine_.findSizeWarnings(config_, plans, stateStore_);
-            std::unordered_set<std::string> blockedPlanKeys;
-            std::vector<SizeWarning> warningsForApproval;
-            for (const SizeWarning& warning : sizeWarnings) {
-                const std::string key = sizeWarningKey(warning.sourceId, warning.destinationId);
-                if (deferredSizeWarnings_.contains(key)) {
-                    blockedPlanKeys.insert(key);
-                } else {
-                    warningsForApproval.push_back(warning);
-                }
-            }
-            if (!warningsForApproval.empty()) {
-                SizeApprovalDialog dialog{warningsForApproval};
-                const SizeApprovalResult decision = dialog.show();
-                if (decision == SizeApprovalResult::skip) {
-                    for (const SizeWarning& warning : warningsForApproval) {
-                        const std::string key = sizeWarningKey(warning.sourceId, warning.destinationId);
-                        deferredSizeWarnings_.insert(key);
-                        blockedPlanKeys.insert(key);
-                    }
-                }
-                if (decision == SizeApprovalResult::approveProjectsAlways) {
-                    for (const SizeWarning& warning : warningsForApproval) {
-                        if (warning.isProject) {
-                            stateStore_.setPermanentSizeApproval(warning.sourceId, utcNowForApproval());
-                        }
-                    }
-                }
-            }
-            std::erase_if(plans, [&](const MirrorPlan& plan) {
-                return blockedPlanKeys.contains(sizeWarningKey(plan.sourceId, plan.destinationId));
-            });
-            if (plans.empty()) {
-                footerStatus_->copy_label(
-                    "Large items skipped. You will be asked again only after the Project changes or Run now is used.");
-                nextAutomaticAttempt_ = std::chrono::steady_clock::now();
-                return;
+                initializeRouteStates(true);
             }
             if (backupThread_.joinable()) {
                 backupThread_.join();
@@ -940,27 +908,129 @@ private:
             isBackupRunning_ = true;
             runNowButton_->deactivate();
             updateGlobalStatus();
-            const std::string status = "Mirroring " + std::to_string(plans.size()) + " configured Sources...";
-            footerStatus_->copy_label(status.c_str());
+            footerStatus_->copy_label("Checking pending backups and snapshots...");
             const BackupConfig configSnapshot = config_;
-            backupThread_ = std::thread([this, configSnapshot, plans = std::move(plans)] {
-                BackupRunSummary result;
+            const std::vector<ConfiguredProjectsSource> projectsSourcesSnapshot = projectsSources_;
+            backupThread_ = std::thread([this, configSnapshot, projectsSourcesSnapshot, pendingOnly] {
+                BackupPreparation preparation;
+                preparation.pendingOnly = pendingOnly;
                 try {
-                    result = backupEngine_.runMirrors(configSnapshot, plans, stateStore_, dataDirectory_ / L"logs");
+                    preparation.mirrorPlans = pendingOnly
+                                                  ? backupEngine_.previewPendingMirrors(configSnapshot, projectsSourcesSnapshot,
+                                                                                       stateStore_)
+                                                  : backupEngine_.previewMirrors(configSnapshot, projectsSourcesSnapshot);
+                    preparation.snapshotPlans =
+                        backupEngine_.previewDueSnapshots(configSnapshot, projectsSourcesSnapshot, stateStore_);
+                    const auto isPermanentlyIgnored = [this](const MirrorPlan& plan) {
+                        return plan.isProjectsSource &&
+                               stateStore_.projectBackupDecision(plan.sourceId) ==
+                                   ProjectBackupDecision::ignorePermanently;
+                    };
+                    std::erase_if(preparation.mirrorPlans, isPermanentlyIgnored);
+                    std::erase_if(preparation.snapshotPlans, isPermanentlyIgnored);
+                    preparation.sizeWarnings = backupEngine_.findSizeWarnings(configSnapshot, preparation.mirrorPlans,
+                                                                              stateStore_);
                 } catch (const std::exception& error) {
-                    result.failed = 1;
-                    result.messages.push_back(error.what());
+                    preparation.error = error.what();
                 }
                 {
                     const std::scoped_lock lock(backupResultMutex_);
-                    backupResult_ = std::move(result);
+                    backupPreparation_ = std::move(preparation);
                 }
-                Fl::awake(mirrorFinishedAwake, this);
+                Fl::awake(backupPreparedAwake, this);
             });
         } catch (const std::exception& error) {
             footerStatus_->copy_label(error.what());
             reportError(error);
         }
+    }
+
+    void finishBackupPreparation() {
+        if (backupThread_.joinable()) {
+            backupThread_.join();
+        }
+        BackupPreparation preparation;
+        {
+            const std::scoped_lock lock(backupResultMutex_);
+            preparation = std::move(*backupPreparation_);
+            backupPreparation_.reset();
+        }
+        if (preparation.error.has_value()) {
+            isBackupRunning_ = false;
+            runNowButton_->activate();
+            footerStatus_->copy_label(preparation.error->c_str());
+            reportError(std::runtime_error(*preparation.error));
+            return;
+        }
+
+        std::unordered_set<std::string> ignoredSourceIds;
+        for (const SizeWarning& warning : preparation.sizeWarnings) {
+            const std::vector<SizeWarning> folderWarning{warning};
+            SizeApprovalDialog dialog{folderWarning};
+            const SizeApprovalResult decision = dialog.show();
+            const ProjectBackupDecision storedDecision = decision == SizeApprovalResult::alwaysAllow
+                                                             ? ProjectBackupDecision::alwaysAllow
+                                                             : ProjectBackupDecision::ignorePermanently;
+            stateStore_.setProjectBackupDecision(warning.sourceId, storedDecision, utcNowForApproval());
+            if (storedDecision == ProjectBackupDecision::ignorePermanently) {
+                ignoredSourceIds.insert(warning.sourceId);
+                for (const Destination& destination : config_.destinations) {
+                    stateStore_.clearRoutePending(warning.sourceId, destination.id);
+                }
+            }
+        }
+        if (!ignoredSourceIds.empty()) {
+            restartSourceWatcher();
+        }
+        const auto isBlocked = [&](const MirrorPlan& plan) {
+            return ignoredSourceIds.contains(plan.sourceId);
+        };
+        std::erase_if(preparation.mirrorPlans, isBlocked);
+        std::erase_if(preparation.snapshotPlans, isBlocked);
+        if (preparation.mirrorPlans.empty() && preparation.snapshotPlans.empty()) {
+            isBackupRunning_ = false;
+            runNowButton_->activate();
+            const bool hasPendingWork = std::ranges::any_of(stateStore_.routeStates(), [](const RouteRuntimeState& state) {
+                return state.isDirty;
+            });
+            if (!ignoredSourceIds.empty()) {
+                footerStatus_->copy_label("Large Project folders were ignored permanently.");
+                nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::minutes{1};
+            } else if (preparation.pendingOnly && hasPendingWork) {
+                footerStatus_->copy_label("Backup is pending. Waiting for a Source or Destination.");
+                nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+            } else {
+                footerStatus_->copy_label("No backup work is currently due.");
+                nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::minutes{1};
+            }
+            updateGlobalStatus();
+            return;
+        }
+
+        const std::string status = "Backing up " + std::to_string(preparation.mirrorPlans.size()) +
+                                   " Mirrors and " + std::to_string(preparation.snapshotPlans.size()) + " Snapshots...";
+        footerStatus_->copy_label(status.c_str());
+        const BackupConfig configSnapshot = config_;
+        backupThread_ = std::thread([this, configSnapshot, preparation = std::move(preparation)] {
+            BackupRunSummary result;
+            try {
+                result = backupEngine_.runMirrors(configSnapshot, preparation.mirrorPlans, stateStore_,
+                                                  dataDirectory_ / L"logs");
+                BackupRunSummary snapshots = backupEngine_.runSnapshots(configSnapshot, preparation.snapshotPlans, stateStore_);
+                result.succeeded += snapshots.succeeded;
+                result.failed += snapshots.failed;
+                result.messages.insert(result.messages.end(), std::make_move_iterator(snapshots.messages.begin()),
+                                       std::make_move_iterator(snapshots.messages.end()));
+            } catch (const std::exception& error) {
+                result.failed = 1;
+                result.messages.push_back(error.what());
+            }
+            {
+                const std::scoped_lock lock(backupResultMutex_);
+                backupResult_ = std::move(result);
+            }
+            Fl::awake(mirrorFinishedAwake, this);
+        });
     }
 
     void finishMirrorRun() {
@@ -984,7 +1054,11 @@ private:
         footerStatus_->copy_label(status.c_str());
         overviewPanel_->refresh();
         activityPanel_->refresh();
-        nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        const bool hasPendingWork = std::ranges::any_of(stateStore_.routeStates(), [](const RouteRuntimeState& state) {
+            return state.isDirty;
+        });
+        nextAutomaticAttempt_ = std::chrono::steady_clock::now() +
+                                (hasPendingWork ? std::chrono::seconds{5} : std::chrono::minutes{1});
         updateGlobalStatus();
         window_->redraw();
     }

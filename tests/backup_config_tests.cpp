@@ -1,5 +1,6 @@
 #include "backup_config.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <stdexcept>
 #include <string>
@@ -67,6 +68,26 @@ TEST_CASE("backup configuration permits only one route for a Source and Destinat
     config.routes.push_back(config.routes.front());
 
     REQUIRE_THROWS_AS(validateBackupConfig(config), std::invalid_argument);
+}
+
+TEST_CASE("backup routes cover every Source and Projects Root for every Destination") {
+    BackupConfig config = populatedConfig();
+
+    rebuildBackupRoutes(config);
+
+    REQUIRE(config.routes.size() == 6);
+    for (const ManualSource& source : config.manualSources) {
+        for (const Destination& destination : config.destinations) {
+            REQUIRE(std::ranges::any_of(config.routes, [&](const BackupRoute& route) {
+                return route.sourceId == source.id && route.destinationId == destination.id;
+            }));
+        }
+    }
+    for (const Destination& destination : config.destinations) {
+        REQUIRE(std::ranges::any_of(config.routes, [&](const BackupRoute& route) {
+            return route.sourceId == config.projectsRoots.front().id && route.destinationId == destination.id;
+        }));
+    }
 }
 
 TEST_CASE("generated stable IDs retain the requested domain prefix") {

@@ -7,12 +7,12 @@ A lightweight Windows tray application for configuring and running personal file
 - Resizable dark-only FLTK window with flat controls and an icon sidebar for Backup status, Sources, Projects, Destinations, Activity, and Settings.
 - Working Manual Sources page with search, bulk removal, and native Windows pickers that can add many files or many folders at once.
 - Working Destinations page that detects connected removable drives, tracks them by volume serial number, shows availability and free space, and also accepts folder destinations.
-- Manual Sources can be connected to or disconnected from a selected Destination in bulk; new routes enable Mirror and Snapshots by default.
+- Every Manual Source and Projects Root is backed up automatically to every folder and USB Destination configured on the Destinations page.
 - `Run now` performs configured Mirrors sequentially in the background. Mirrors preserve their original path under `<destination>\BackItUpTool\Mirrors`, such as `C\Users\name\Documents`, and reject any Source/Destination overlap.
 - Manual Sources are watched automatically. Changes are debounced, saved as pending work in SQLite, mirrored when the Destination is available, and remain queued across app restarts or removable-drive disconnections.
-- Project Roots can be added and connected from the Projects page. Immediate child folders opt in with `.backup-watch`; the app gives empty markers a stable UUID and uses `ReadDirectoryChangesW` to discover new opted-in folders when the Root changes.
+- Project Roots can be added from the Projects page. Folders at any depth opt in with `.backup-watch`; the app gives empty markers a stable UUID and uses recursive `ReadDirectoryChangesW` notifications to discover changes without polling.
 - Project backups exclude `.git` repositories, `build`, `node_modules`, junctions, `.backup-watch`, `.backup-ignore`, and paths matched by `.backup-ignore`. Hidden loose files remain included.
-- Before a Project backup, an always-on-top approval window lists any eligible file over 50 MiB or Project total over 150 MiB. You can approve once, permanently allow that Project, or skip it. A skipped Project stays pending without asking again until that Project changes or you select `Run now`.
+- The first time a Project exceeds the large-file or total-size limit, an always-on-top approval window asks whether to always allow or permanently ignore that specific folder. The stored decision prevents repeated prompts.
 - Each changed Source also receives a ZIP Snapshot after its Mirror succeeds. Snapshots are stored below `<destination>\BackItUpTool\Snapshots` using the original readable path, then kept daily for 30 days and monthly for 12 months by default.
 - The Backup status page shows Destination availability, pending Mirrors, the most recent successful Mirror and Snapshot, automatic-watching status, and recent failures.
 - The Activity page shows recent backup work and errors. Settings can change the watcher settle delay and large-Project warning limits without editing `config.json` by hand.

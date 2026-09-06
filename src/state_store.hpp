@@ -17,6 +17,11 @@ enum class RouteStatus {
     error,
 };
 
+enum class ProjectBackupDecision {
+    alwaysAllow,
+    ignorePermanently,
+};
+
 struct RouteRuntimeState {
     std::string sourceId;
     std::string destinationId;
@@ -64,6 +69,7 @@ public:
     [[nodiscard]] std::vector<RouteRuntimeState> routeStates() const;
     void setRouteState(const RouteRuntimeState& state);
     void markRouteDirty(std::string_view sourceId, std::string_view destinationId);
+    void recoverInterruptedRoutes();
     void beginRouteAttempt(std::string_view sourceId, std::string_view destinationId, std::string_view attemptUtc);
     void completeRouteSuccess(std::string_view sourceId, std::string_view destinationId,
                               std::string_view successUtc);
@@ -83,9 +89,10 @@ public:
                         std::optional<std::string_view> destinationId = std::nullopt);
     [[nodiscard]] std::vector<ActivityRecord> recentActivity(std::size_t limit) const;
 
-    [[nodiscard]] bool hasPermanentSizeApproval(std::string_view projectId) const;
-    void setPermanentSizeApproval(std::string_view projectId, std::string_view approvedUtc);
-    void clearPermanentSizeApproval(std::string_view projectId);
+    [[nodiscard]] std::optional<ProjectBackupDecision> projectBackupDecision(std::string_view projectId) const;
+    void setProjectBackupDecision(std::string_view projectId, ProjectBackupDecision decision,
+                                  std::string_view decidedUtc);
+    void clearRoutePending(std::string_view sourceId, std::string_view destinationId);
 
 private:
     struct SQLiteCloser {

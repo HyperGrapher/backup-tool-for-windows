@@ -17,6 +17,7 @@ namespace {
 constexpr DWORD kChangeFilter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
                                 FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE |
                                 FILE_NOTIFY_CHANGE_CREATION;
+constexpr auto kRetryDelay = std::chrono::seconds{5};
 
 [[nodiscard]] std::wstring lowercase(std::wstring text) {
     std::transform(text.begin(), text.end(), text.begin(), [](wchar_t character) {
@@ -36,6 +37,7 @@ struct SourceWatcher::Registration {
     OVERLAPPED overlapped{};
     std::array<std::byte, 64 * 1024> buffer{};
     std::optional<std::chrono::steady_clock::time_point> lastChange;
+    std::chrono::steady_clock::time_point nextOpenAttempt{};
 };
 
 SourceWatcher::SourceWatcher() = default;
@@ -89,36 +91,23 @@ void SourceWatcher::start(const std::vector<SourceWatchTarget>& targets, int deb
         registration->isRecursive = target.isRecursive;
         registration->isRelevantChange = target.isRelevantChange;
 
-        registration->handle = CreateFileW(
-            registration->directory.c_str(), FILE_LIST_DIRECTORY,
-            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
-        if (registration->handle == INVALID_HANDLE_VALUE) {
-            continue;
-        }
-        if (CreateIoCompletionPort(registration->handle, completionPort, reinterpret_cast<ULONG_PTR>(registration.get()),
-                                   0) == nullptr) {
-            CloseHandle(registration->handle);
-            registration->handle = INVALID_HANDLE_VALUE;
-            continue;
-        }
         registrations_.push_back(std::move(registration));
     }
 
     isRunning_ = true;
     for (const std::unique_ptr<Registration>& registration : registrations_) {
-        issueRead(*registration);
+        if (!openRegistration(*registration)) {
+            registration->nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
+        } else if (!issueRead(*registration)) {
+            closeRegistration(*registration);
+            registration->nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
+        }
     }
     thread_ = std::thread([this] { watchLoop(); });
 }
 
 void SourceWatcher::stop() {
     isRunning_ = false;
-    for (const std::unique_ptr<Registration>& registration : registrations_) {
-        if (registration->handle != INVALID_HANDLE_VALUE) {
-            CancelIoEx(registration->handle, &registration->overlapped);
-        }
-    }
     if (completionPort_ != nullptr) {
         PostQueuedCompletionStatus(static_cast<HANDLE>(completionPort_), 0, 0, nullptr);
     }
@@ -126,9 +115,7 @@ void SourceWatcher::stop() {
         thread_.join();
     }
     for (const std::unique_ptr<Registration>& registration : registrations_) {
-        if (registration->handle != INVALID_HANDLE_VALUE) {
-            CloseHandle(registration->handle);
-        }
+        closeRegistration(*registration);
     }
     registrations_.clear();
     if (completionPort_ != nullptr) {
@@ -136,10 +123,11 @@ void SourceWatcher::stop() {
         completionPort_ = nullptr;
     }
     callback_ = {};
+    activeRegistrationCount_ = 0;
 }
 
 std::size_t SourceWatcher::watchedSourceCount() const noexcept {
-    return registrations_.size();
+    return activeRegistrationCount_;
 }
 
 void SourceWatcher::watchLoop() {
@@ -153,8 +141,13 @@ void SourceWatcher::watchLoop() {
             break;
         }
 
-        if (completed != FALSE && completionKey != 0 && overlapped != nullptr) {
+        if (completionKey != 0 && overlapped != nullptr) {
             auto& registration = *reinterpret_cast<Registration*>(completionKey);
+            if (completed == FALSE) {
+                closeRegistration(registration);
+                registration.nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
+                continue;
+            }
             bool isRelevant = transferredBytes == 0;
             std::size_t offset = 0;
             while (!isRelevant && offset < transferredBytes) {
@@ -174,11 +167,23 @@ void SourceWatcher::watchLoop() {
             if (isRelevant) {
                 registration.lastChange = std::chrono::steady_clock::now();
             }
-            issueRead(registration);
+            if (!issueRead(registration)) {
+                closeRegistration(registration);
+                registration.nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
+            }
         }
 
         const auto now = std::chrono::steady_clock::now();
         for (const std::unique_ptr<Registration>& registration : registrations_) {
+            if (registration->handle == INVALID_HANDLE_VALUE && now >= registration->nextOpenAttempt) {
+                registration->nextOpenAttempt = now + kRetryDelay;
+                if (openRegistration(*registration) && issueRead(*registration)) {
+                    registration->lastChange = now;
+                } else {
+                    closeRegistration(*registration);
+                }
+                continue;
+            }
             if (!registration->lastChange.has_value() || now - *registration->lastChange < debounce_) {
                 continue;
             }
@@ -191,9 +196,30 @@ void SourceWatcher::watchLoop() {
     }
 }
 
-void SourceWatcher::issueRead(Registration& registration) {
+bool SourceWatcher::openRegistration(Registration& registration) {
+    if (!isRunning_ || registration.handle != INVALID_HANDLE_VALUE) {
+        return registration.handle != INVALID_HANDLE_VALUE;
+    }
+    registration.handle = CreateFileW(
+        registration.directory.c_str(), FILE_LIST_DIRECTORY,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, nullptr);
+    if (registration.handle == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    if (CreateIoCompletionPort(registration.handle, static_cast<HANDLE>(completionPort_),
+                               reinterpret_cast<ULONG_PTR>(&registration), 0) == nullptr) {
+        CloseHandle(registration.handle);
+        registration.handle = INVALID_HANDLE_VALUE;
+        return false;
+    }
+    ++activeRegistrationCount_;
+    return true;
+}
+
+bool SourceWatcher::issueRead(Registration& registration) {
     if (!isRunning_) {
-        return;
+        return false;
     }
     registration.overlapped = {};
     DWORD ignoredBytes{};
@@ -201,7 +227,15 @@ void SourceWatcher::issueRead(Registration& registration) {
         registration.handle, registration.buffer.data(), static_cast<DWORD>(registration.buffer.size()),
         registration.isRecursive ? TRUE : FALSE, kChangeFilter, &ignoredBytes, &registration.overlapped,
         nullptr);
-    if (started == FALSE) {
-        registration.lastChange = std::chrono::steady_clock::now();
+    return started != FALSE;
+}
+
+void SourceWatcher::closeRegistration(Registration& registration) {
+    if (registration.handle == INVALID_HANDLE_VALUE) {
+        return;
     }
+    CancelIoEx(registration.handle, &registration.overlapped);
+    CloseHandle(registration.handle);
+    registration.handle = INVALID_HANDLE_VALUE;
+    --activeRegistrationCount_;
 }

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -66,7 +67,22 @@ struct ProjectPreflight {
     bool doesProjectExceedThreshold{};
     bool isGitRepository{};
 
-    [[nodiscard]] bool requiresSizeApproval(bool isPermanentlyApproved) const noexcept;
+    [[nodiscard]] bool requiresApproval() const noexcept;
+};
+
+class ProjectChangeFilter final {
+public:
+    explicit ProjectChangeFilter(std::filesystem::path sourceRoot);
+    ~ProjectChangeFilter();
+
+    ProjectChangeFilter(const ProjectChangeFilter&) = delete;
+    ProjectChangeFilter& operator=(const ProjectChangeFilter&) = delete;
+
+    [[nodiscard]] bool operator()(const std::filesystem::path& relativePath);
+
+private:
+    struct Implementation;
+    std::unique_ptr<Implementation> implementation_;
 };
 
 [[nodiscard]] ProjectsDiscovery discoverProjects(const ProjectsRoot& root);

@@ -27,6 +27,15 @@ using Statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>;
     return text;
 }
 
+[[nodiscard]] std::filesystem::path pathFromUtf8(std::string_view text) {
+    std::u8string bytes;
+    bytes.reserve(text.size());
+    for (const char byte : text) {
+        bytes.push_back(static_cast<char8_t>(static_cast<unsigned char>(byte)));
+    }
+    return std::filesystem::path{bytes};
+}
+
 void bindText(sqlite3* database, sqlite3_stmt* statement, int index, std::string_view value) {
     if (sqlite3_bind_text(statement, index, value.data(), static_cast<int>(value.size()), SQLITE_TRANSIENT) != SQLITE_OK) {
         throw std::runtime_error(sqlite3_errmsg(database));
@@ -166,10 +175,12 @@ StateStore::StateStore(const std::filesystem::path& path) {
         ");");
     execute("CREATE INDEX IF NOT EXISTS snapshot_history_route_recent "
             "ON snapshot_history(source_id, destination_id, created_utc DESC);");
+    execute("DROP TABLE IF EXISTS project_size_approval;");
     execute(
-        "CREATE TABLE IF NOT EXISTS project_size_approval ("
+        "CREATE TABLE IF NOT EXISTS project_backup_decision ("
         "project_id TEXT PRIMARY KEY,"
-        "approved_utc TEXT NOT NULL"
+        "decision TEXT NOT NULL CHECK(decision IN ('allow', 'ignore')) ,"
+        "decided_utc TEXT NOT NULL"
         ");");
 }
 
@@ -266,6 +277,11 @@ void StateStore::markRouteDirty(std::string_view sourceId, std::string_view dest
     if (sqlite3_step(statement.get()) != SQLITE_DONE) {
         throw std::runtime_error(sqlite3_errmsg(database_.get()));
     }
+}
+
+void StateStore::recoverInterruptedRoutes() {
+    execute("UPDATE route_state SET status = 'pending', is_dirty = 1 "
+            "WHERE status = 'running';");
 }
 
 void StateStore::beginRouteAttempt(std::string_view sourceId, std::string_view destinationId,
@@ -366,7 +382,7 @@ std::vector<SnapshotRecord> StateStore::snapshotRecords(std::string_view sourceI
     while (sqlite3_step(statement.get()) == SQLITE_ROW) {
         records.push_back(SnapshotRecord{sqlite3_column_int64(statement.get(), 0), requiredColumnText(statement.get(), 1),
                                          requiredColumnText(statement.get(), 2), requiredColumnText(statement.get(), 3),
-                                         std::filesystem::u8path(requiredColumnText(statement.get(), 4)),
+                                         pathFromUtf8(requiredColumnText(statement.get(), 4)),
                                          static_cast<std::uintmax_t>(sqlite3_column_int64(statement.get(), 5))});
     }
     return records;
@@ -449,38 +465,53 @@ std::vector<ActivityRecord> StateStore::recentActivity(std::size_t limit) const 
     }
 }
 
-bool StateStore::hasPermanentSizeApproval(std::string_view projectId) const {
+std::optional<ProjectBackupDecision> StateStore::projectBackupDecision(std::string_view projectId) const {
     requireIdentifier(projectId, "Project ID");
-    auto statement = prepare(database_.get(), "SELECT 1 FROM project_size_approval WHERE project_id = ?1;");
+    auto statement = prepare(database_.get(),
+                             "SELECT decision FROM project_backup_decision WHERE project_id = ?1;");
     bindText(database_.get(), statement.get(), 1, projectId);
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_ROW) {
-        return true;
+        const std::string decision = requiredColumnText(statement.get(), 0);
+        if (decision == "allow") {
+            return ProjectBackupDecision::alwaysAllow;
+        }
+        if (decision == "ignore") {
+            return ProjectBackupDecision::ignorePermanently;
+        }
+        throw std::runtime_error("State database contains an unknown Project backup decision.");
     }
     if (result == SQLITE_DONE) {
-        return false;
+        return std::nullopt;
     }
     throw std::runtime_error(sqlite3_errmsg(database_.get()));
 }
 
-void StateStore::setPermanentSizeApproval(std::string_view projectId, std::string_view approvedUtc) {
+void StateStore::setProjectBackupDecision(std::string_view projectId, ProjectBackupDecision decision,
+                                          std::string_view decidedUtc) {
     requireIdentifier(projectId, "Project ID");
-    requireIdentifier(approvedUtc, "Approval timestamp");
+    requireIdentifier(decidedUtc, "Decision timestamp");
     auto statement = prepare(
         database_.get(),
-        "INSERT INTO project_size_approval(project_id, approved_utc) VALUES(?1, ?2) "
-        "ON CONFLICT(project_id) DO UPDATE SET approved_utc = excluded.approved_utc;");
+        "INSERT INTO project_backup_decision(project_id, decision, decided_utc) VALUES(?1, ?2, ?3) "
+        "ON CONFLICT(project_id) DO UPDATE SET decision = excluded.decision, decided_utc = excluded.decided_utc;");
     bindText(database_.get(), statement.get(), 1, projectId);
-    bindText(database_.get(), statement.get(), 2, approvedUtc);
+    bindText(database_.get(), statement.get(), 2,
+             decision == ProjectBackupDecision::alwaysAllow ? "allow" : "ignore");
+    bindText(database_.get(), statement.get(), 3, decidedUtc);
     if (sqlite3_step(statement.get()) != SQLITE_DONE) {
         throw std::runtime_error(sqlite3_errmsg(database_.get()));
     }
 }
 
-void StateStore::clearPermanentSizeApproval(std::string_view projectId) {
-    requireIdentifier(projectId, "Project ID");
-    auto statement = prepare(database_.get(), "DELETE FROM project_size_approval WHERE project_id = ?1;");
-    bindText(database_.get(), statement.get(), 1, projectId);
+void StateStore::clearRoutePending(std::string_view sourceId, std::string_view destinationId) {
+    requireIdentifier(sourceId, "Source ID");
+    requireIdentifier(destinationId, "Destination ID");
+    auto statement = prepare(database_.get(),
+                             "UPDATE route_state SET status = 'synced', is_dirty = 0, last_error = NULL "
+                             "WHERE source_id = ?1 AND destination_id = ?2;");
+    bindText(database_.get(), statement.get(), 1, sourceId);
+    bindText(database_.get(), statement.get(), 2, destinationId);
     if (sqlite3_step(statement.get()) != SQLITE_DONE) {
         throw std::runtime_error(sqlite3_errmsg(database_.get()));
     }

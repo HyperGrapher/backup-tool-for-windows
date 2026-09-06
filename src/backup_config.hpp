@@ -81,6 +81,7 @@ struct BackupConfig {
 
 [[nodiscard]] std::string generateUuid();
 [[nodiscard]] std::string generateStableId(std::string_view prefix);
+void rebuildBackupRoutes(BackupConfig& config);
 void validateBackupConfig(const BackupConfig& config);
 [[nodiscard]] std::string serializeBackupConfig(const BackupConfig& config);
 [[nodiscard]] BackupConfig deserializeBackupConfig(std::string_view jsonText);

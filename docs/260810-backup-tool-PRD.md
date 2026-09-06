@@ -63,15 +63,15 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 ### 6.1 Source Management — Manual (GUI)
 
 - User can add a file or folder as a watch source via a native folder/file picker.
-- Each source can be assigned to one or more configured destinations.
+- Every source is backed up to every configured destination automatically.
 - User can remove a source; removal stops watching but does not delete existing backup data.
 - Sources list shown in a management window: path, type (file/folder), assigned destinations, last sync time, current status (synced / pending / dirty / error).
 
 ### 6.2 Source Management — Projects Auto-Discovery
 
-- User configures a single `Projects Parent` path in settings.
-- App scans immediate children of the parent on a timer (default: every 5 minutes) and on filesystem change events at that top level.
-- A child folder is included as a watched project root only if it contains a `.backup-watch` marker file (empty file, presence = opt-in).
+- User can configure one or more Projects Root paths.
+- The app discovers opted-in folders recursively when a Root is added and when `ReadDirectoryChangesW` reports marker or Git-boundary changes. It does not poll Projects Roots.
+- A folder at any depth is included as a watched project only if it contains a `.backup-watch` marker file (empty file, presence = opt-in).
 - Within an opted-in project root, any immediate subfolder containing a `.git` directory is treated as a codebase and excluded automatically — not watched, not backed up.
 - An optional `.backup-ignore` file (gitignore pattern syntax) inside a project root can exclude additional files/folders the git-detection heuristic doesn't catch (e.g., a large renders/cache folder).
 - Re-scan must correctly handle: a project folder's marker being removed (stop watching, do not delete prior backups), a subfolder becoming a git repo mid-session (git init) (exclude it going forward), and new project folders appearing.

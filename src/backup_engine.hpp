@@ -29,11 +29,9 @@ struct BackupRunSummary {
 
 struct SizeWarning {
     std::string sourceId;
-    std::string destinationId;
     std::filesystem::path sourcePath;
     std::uint64_t eligibleSizeBytes{};
     std::vector<LargeEligibleFile> largeFiles;
-    bool isProject{};
 };
 
 class BackupEngine final {
@@ -43,12 +41,17 @@ public:
     [[nodiscard]] std::vector<MirrorPlan> previewPendingMirrors(const BackupConfig& config,
                                                                 const std::vector<ConfiguredProjectsSource>& projectsSources,
                                                                 const StateStore& stateStore) const;
+    [[nodiscard]] std::vector<MirrorPlan> previewDueSnapshots(
+        const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+        const StateStore& stateStore) const;
     [[nodiscard]] std::vector<SizeWarning> findSizeWarnings(const BackupConfig& config,
                                                             const std::vector<MirrorPlan>& plans,
                                                             const StateStore& stateStore) const;
     [[nodiscard]] BackupRunSummary runMirrors(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
                                               StateStore& stateStore,
                                               const std::filesystem::path& logDirectory) const;
+    [[nodiscard]] BackupRunSummary runSnapshots(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
+                                                StateStore& stateStore) const;
 
 private:
     void createDueSnapshot(const BackupRoute& route, const MirrorPlan& plan, const Destination& destination,

@@ -106,7 +106,7 @@ TEST_CASE("a watched change becomes a pending mirror and is reconciled") {
 
 TEST_CASE("a Projects Root watch reacts to marker changes but ignores normal project files") {
     WatcherTemporaryDirectory directory;
-    const std::filesystem::path project = directory.path() / "ExampleProject";
+    const std::filesystem::path project = directory.path() / "desktop-apps" / "backup-tool";
     std::filesystem::create_directories(project);
 
     std::mutex notificationMutex;
@@ -141,5 +141,29 @@ TEST_CASE("a Projects Root watch reacts to marker changes but ignores normal pro
         std::unique_lock lock(notificationMutex);
         REQUIRE(notificationCondition.wait_for(lock, std::chrono::seconds{5}, [&] { return wasNotified; }));
     }
+    watcher.stop();
+}
+
+TEST_CASE("an unavailable watched folder is retried when it returns") {
+    WatcherTemporaryDirectory directory;
+    const std::filesystem::path sourceFolder = directory.path() / "later";
+    std::mutex notificationMutex;
+    std::condition_variable notificationCondition;
+    bool wasNotified = false;
+
+    SourceWatcher watcher;
+    watcher.start({ManualSource{"source-one", sourceFolder, ManualSourceKind::folder}}, 1,
+                  [&](const std::string&) {
+                      const std::scoped_lock lock(notificationMutex);
+                      wasNotified = true;
+                      notificationCondition.notify_one();
+                  });
+    REQUIRE(watcher.watchedSourceCount() == 0);
+    std::filesystem::create_directories(sourceFolder);
+    {
+        std::unique_lock lock(notificationMutex);
+        REQUIRE(notificationCondition.wait_for(lock, std::chrono::seconds{10}, [&] { return wasNotified; }));
+    }
+    REQUIRE(watcher.watchedSourceCount() == 1);
     watcher.stop();
 }

@@ -4,7 +4,6 @@
 #include <windows.h>
 
 #include <iomanip>
-#include <algorithm>
 #include <sstream>
 #include <string>
 
@@ -56,6 +55,7 @@ SizeApprovalDialog::SizeApprovalDialog(const std::vector<SizeWarning>& warnings)
 
 SizeApprovalResult SizeApprovalDialog::show() {
     Fl_Double_Window window(720, 430, "BackItUpTool - approval needed");
+    window.callback(ignoreCloseCallback, this);
     window.color(UiTheme::kBackground);
     window.begin();
     addLabel(24, 18, 670, 30, "Large backup items need your approval", 18, UiTheme::kText,
@@ -71,34 +71,22 @@ SizeApprovalResult SizeApprovalDialog::show() {
     browser->textsize(12);
     browser->textfont(UiTheme::kMonoFont);
     for (const SizeWarning& warning : warnings_) {
-        const std::string sourceText = warning.isProject ? "Project" : "File";
-        browser->add((sourceText + ": " + warning.sourcePath.string()).c_str());
+        browser->add(("Project: " + warning.sourcePath.string()).c_str());
         for (const LargeEligibleFile& largeFile : warning.largeFiles) {
             browser->add(("  Large file: " + largeFile.relativePath.string() + " (" +
                           formatMiB(largeFile.sizeBytes) + ")").c_str());
         }
-        if (warning.isProject) {
-            browser->add(("  Eligible project total: " + formatMiB(warning.eligibleSizeBytes) +
-                          " (limit 150.0 MiB)").c_str());
-        }
+        browser->add(("  Eligible project total: " + formatMiB(warning.eligibleSizeBytes) +
+                      " (limit 150.0 MiB)").c_str());
     }
 
-    auto* approveButton = new Fl_Button(24, 355, 190, 42, "Approve once");
-    styleButton(*approveButton, UiTheme::kPrimary, UiTheme::kPrimaryPressed);
-    approveButton->labelfont(UiTheme::kUiFontSemibold);
-    approveButton->callback(approveOnceCallback, this);
-    auto* alwaysButton = new Fl_Button(226, 355, 230, 42, "Always allow Projects");
+    auto* ignoreButton = new Fl_Button(24, 355, 324, 42, "Ignore permanently");
+    styleButton(*ignoreButton, UiTheme::kWarning, UiTheme::kWarningPressed);
+    ignoreButton->callback(ignorePermanentlyCallback, this);
+    auto* alwaysButton = new Fl_Button(360, 355, 336, 42, "Always allow");
     styleButton(*alwaysButton, UiTheme::kSuccessAction, UiTheme::kSuccessActionPressed);
-    alwaysButton->callback(approveAlwaysCallback, this);
-    const bool hasProjectWarning = std::ranges::any_of(warnings_, [](const SizeWarning& warning) {
-        return warning.isProject;
-    });
-    if (!hasProjectWarning) {
-        alwaysButton->deactivate();
-    }
-    auto* skipButton = new Fl_Button(468, 355, 228, 42, "Skip until it changes");
-    styleButton(*skipButton, UiTheme::kWarning, UiTheme::kWarningPressed);
-    skipButton->callback(skipCallback, this);
+    alwaysButton->labelfont(UiTheme::kUiFontSemibold);
+    alwaysButton->callback(alwaysAllowCallback, this);
     window.end();
     window_ = &window;
     window.set_modal();
@@ -114,20 +102,16 @@ SizeApprovalResult SizeApprovalDialog::show() {
     return result_;
 }
 
-void SizeApprovalDialog::approveOnceCallback(Fl_Widget*, void* context) {
+void SizeApprovalDialog::ignorePermanentlyCallback(Fl_Widget*, void* context) {
     auto* dialog = static_cast<SizeApprovalDialog*>(context);
-    dialog->result_ = SizeApprovalResult::approveOnce;
+    dialog->result_ = SizeApprovalResult::ignorePermanently;
     dialog->window_->hide();
 }
 
-void SizeApprovalDialog::approveAlwaysCallback(Fl_Widget*, void* context) {
+void SizeApprovalDialog::alwaysAllowCallback(Fl_Widget*, void* context) {
     auto* dialog = static_cast<SizeApprovalDialog*>(context);
-    dialog->result_ = SizeApprovalResult::approveProjectsAlways;
+    dialog->result_ = SizeApprovalResult::alwaysAllow;
     dialog->window_->hide();
 }
 
-void SizeApprovalDialog::skipCallback(Fl_Widget*, void* context) {
-    auto* dialog = static_cast<SizeApprovalDialog*>(context);
-    dialog->result_ = SizeApprovalResult::skip;
-    dialog->window_->hide();
-}
+void SizeApprovalDialog::ignoreCloseCallback(Fl_Widget*, void*) {}

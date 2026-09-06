@@ -12,7 +12,6 @@
 
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
-#include <FL/Fl_Choice.H>
 #include <FL/Fl_Multi_Browser.H>
 #include <FL/fl_ask.H>
 #include <FL/platform.H>
@@ -96,7 +95,7 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     begin();
     addLabel(x + 16, y + 10, 220, 28, "Projects", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
     addLabel(x + 16, y + 36, width - 32, 20,
-             "Immediate child folders opt in with .backup-watch. Git repositories and generated folders are excluded.",
+             "Folders at any depth opt in with .backup-watch. Git repositories and generated folders are excluded.",
              11, UiTheme::kSecondaryText);
 
     auto* addButton = new Fl_Button(x + 16, y + 66, 112, 30, "Add roots");
@@ -105,21 +104,6 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     removeButton_ = new Fl_Button(x + 136, y + 66, 132, 30, "Remove selected");
     styleButton(*removeButton_, false, true);
     removeButton_->callback(removeCallback, this);
-
-    addLabel(x + 286, y + 66, 62, 30, "Back up to", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    destinationChoice_ = new Fl_Choice(x + 354, y + 66, 210, 30);
-    destinationChoice_->box(FL_BORDER_BOX);
-    destinationChoice_->color(UiTheme::kSurface);
-    destinationChoice_->textcolor(UiTheme::kText);
-    destinationChoice_->textfont(UiTheme::kUiFont);
-    destinationChoice_->textsize(12);
-    connectButton_ = new Fl_Button(x + 572, y + 66, 96, 30, "Connect");
-    styleButton(*connectButton_, true);
-    connectButton_->callback(connectCallback, this);
-    disconnectButton_ = new Fl_Button(x + 676, y + 66, 104, 30, "Disconnect");
-    styleButton(*disconnectButton_);
-    disconnectButton_->callback(disconnectCallback, this);
 
     addLabel(x + 20, y + 108, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
     addLabel(x + 148, y + 108, 460, 22, "Root folder", 11, UiTheme::kSecondaryText,
@@ -147,23 +131,14 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
 
 void ProjectsPanel::refresh() {
     discovery_ = discoverConfiguredProjects(config_.projectsRoots);
-    destinationChoice_->clear();
-    for (const Destination& destination : config_.destinations) {
-        destinationChoice_->add(destination.name.c_str());
-    }
-    if (config_.destinations.empty()) {
-        destinationChoice_->add("Add a Destination first");
-    }
-    destinationChoice_->value(0);
     rootBrowser_->clear();
     for (const ProjectsRoot& root : config_.projectsRoots) {
         const auto optedIn = std::ranges::count_if(discovery_.sources, [&](const ConfiguredProjectsSource& source) {
             return source.rootId == root.id;
         });
-        const auto routeCount = std::ranges::count(config_.routes, root.id, &BackupRoute::sourceId);
         const std::string line = std::string{UiTheme::statusText(rootStatus(root, discovery_, config_, stateStore_))} +
                                  '\t' + pathToUtf8(root.path) + '\t' + std::to_string(optedIn) + '\t' +
-                                 std::to_string(routeCount);
+                                 std::to_string(config_.destinations.size());
         rootBrowser_->add(line.c_str());
     }
     const std::string summary = std::to_string(config_.projectsRoots.size()) + " Roots, " +
@@ -175,8 +150,6 @@ void ProjectsPanel::refresh() {
 
 void ProjectsPanel::addRootsCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->addRoots(); }
 void ProjectsPanel::removeCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->removeSelectedRoots(); }
-void ProjectsPanel::connectCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->connectSelectedRoots(); }
-void ProjectsPanel::disconnectCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->disconnectSelectedRoots(); }
 void ProjectsPanel::selectionCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->refreshSelectionState(); }
 
 void ProjectsPanel::addRoots() {
@@ -229,61 +202,9 @@ void ProjectsPanel::removeSelectedRoots() {
     }
 }
 
-void ProjectsPanel::connectSelectedRoots() {
-    const std::vector<std::string> ids = selectedRootIds();
-    const int destinationIndex = destinationChoice_->value();
-    if (ids.empty() || destinationIndex < 0 || config_.destinations.empty()) {
-        return;
-    }
-    try {
-        BackupConfig updated = config_;
-        const std::string destinationId = updated.destinations.at(static_cast<std::size_t>(destinationIndex)).id;
-        for (const std::string& id : ids) {
-            if (!std::ranges::any_of(updated.routes, [&](const BackupRoute& route) {
-                    return route.sourceId == id && route.destinationId == destinationId;
-                })) {
-                updated.routes.push_back(BackupRoute{id, destinationId, true, true, {}});
-            }
-        }
-        configStore_.save(updated);
-        config_ = std::move(updated);
-        configChangedCallback_();
-    } catch (const std::exception& error) {
-        reportError(error);
-    }
-}
-
-void ProjectsPanel::disconnectSelectedRoots() {
-    const std::vector<std::string> ids = selectedRootIds();
-    const int destinationIndex = destinationChoice_->value();
-    if (ids.empty() || destinationIndex < 0 || config_.destinations.empty()) {
-        return;
-    }
-    try {
-        const std::unordered_set<std::string> selected(ids.begin(), ids.end());
-        const std::string destinationId = config_.destinations.at(static_cast<std::size_t>(destinationIndex)).id;
-        BackupConfig updated = config_;
-        std::erase_if(updated.routes, [&](const BackupRoute& route) {
-            return selected.contains(route.sourceId) && route.destinationId == destinationId;
-        });
-        configStore_.save(updated);
-        config_ = std::move(updated);
-        configChangedCallback_();
-    } catch (const std::exception& error) {
-        reportError(error);
-    }
-}
-
 void ProjectsPanel::refreshSelectionState() {
     const bool hasSelection = !selectedRootIds().empty();
     hasSelection ? removeButton_->activate() : removeButton_->deactivate();
-    if (hasSelection && !config_.destinations.empty()) {
-        connectButton_->activate();
-        disconnectButton_->activate();
-    } else {
-        connectButton_->deactivate();
-        disconnectButton_->deactivate();
-    }
 }
 
 void ProjectsPanel::reportError(const std::exception& error) const { fl_alert("%s", error.what()); }

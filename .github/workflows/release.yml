@@ -45,10 +45,13 @@ jobs:
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Configure
-        run: cmake --preset windows-release -DBUILD_TESTING=OFF
+        run: cmake --preset windows-release
 
       - name: Build
         run: cmake --build build --preset windows-release --parallel
+
+      - name: Run tests
+        run: ctest --preset windows-release --output-on-failure
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

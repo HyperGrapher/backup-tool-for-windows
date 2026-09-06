@@ -8,9 +8,9 @@
 #include "state_store.hpp"
 
 TEST_CASE("mirror paths preserve the original local drive and folders") {
-    const std::filesystem::path source = LR"(C:\Users\burak\Documents\Cinema 4D)";
+    const std::filesystem::path source = LR"(C:\Users\TestUser\Documents\Cinema 4D)";
 
-    REQUIRE(buildMirrorRelativePath(source) == LR"(C\Users\burak\Documents\Cinema 4D)");
+    REQUIRE(buildMirrorRelativePath(source) == LR"(C\Users\TestUser\Documents\Cinema 4D)");
 }
 
 TEST_CASE("mirror paths preserve the original network server and share") {

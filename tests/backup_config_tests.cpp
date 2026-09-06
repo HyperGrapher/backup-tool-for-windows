@@ -11,9 +11,9 @@ namespace {
 
 [[nodiscard]] BackupConfig populatedConfig() {
     BackupConfig config;
-    config.manualSources.push_back(ManualSource{"source-notes", L"C:\\Users\\Burak\\Notes", ManualSourceKind::folder});
+    config.manualSources.push_back(ManualSource{"source-notes", L"C:\\Users\\TestUser\\Notes", ManualSourceKind::folder});
     config.manualSources.push_back(
-        ManualSource{"source-list", L"C:\\Users\\Burak\\todo.txt", ManualSourceKind::file, BackupMode::zipped});
+        ManualSource{"source-list", L"C:\\Users\\TestUser\\todo.txt", ManualSourceKind::file, BackupMode::zipped});
     config.projectsRoots.push_back(ProjectsRoot{"projects-main", L"D:\\Projects", BackupMode::zipped});
     config.destinations.push_back(Destination{
         "destination-folder",

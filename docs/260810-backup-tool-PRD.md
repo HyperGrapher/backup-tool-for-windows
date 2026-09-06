@@ -2,7 +2,7 @@
 
 ## 1. Summary
 
-A Windows background tray application (C++/FLTK) that watches user-specified files and folders for changes and incrementally backs them up to one or more destinations (removable flash drive, another local folder, or a network path). It supports two independent source-discovery mechanisms — manually added paths via the GUI, and an auto-discovering mode for a "Projects" parent folder that intelligently skips git-managed codebases and backs up only the surrounding project artifacts. Backups run as a live `robocopy`-based mirror plus a periodic dated zip snapshot for basic version history.
+A Windows background tray application (C++/FLTK) that watches user-specified files and folders for changes and backs them up to one or more destinations (removable flash drive, another local folder, or a network path). It supports manually added paths and recursive discovery below one or more Projects Roots. Each Source or Projects Root uses exactly one user-selected mode: a live mirror or a best-compression ZIP archive.
 
 ## 2. Goals
 
@@ -14,7 +14,7 @@ A Windows background tray application (C++/FLTK) that watches user-specified fil
 
 ## 3. Non-Goals (v1)
 
-- Not a full versioned backup system (no per-file history browsing, no restore UI beyond "open the snapshot zip").
+- Not a full versioned backup system (no per-file history browsing and no restore UI beyond opening a ZIP backup).
 - Not a sync tool (one-directional: source → destination only; destination is never the source of truth).
 - No cloud destinations in v1 (S3, OneDrive, etc.) — local paths and removable drives only. Architecture should not preclude adding this later.
 - No cross-machine coordination / multiple watchers writing to the same destination.
@@ -51,8 +51,8 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 │                        │  Backup Runner  │                │
 │  ┌────────────────┐    │ - robocopy /MIR │                │
 │  │ Device Watcher │───►│   per dirty pair│                │
-│  │ (WM_DEVICECHANGE│   │ - snapshot timer│                │
-│  │  / RegisterDevice│   │   (zip)         │                │
+│  │ (WM_DEVICECHANGE│   │ - ZIP level 9    │                │
+│  │  / RegisterDevice│   │   per dirty pair│                │
 │  │  Notification) │    └─────────────────┘                │
 │  └────────────────┘                                       │
 └─────────────────────────────────────────────────────────┘
@@ -63,6 +63,7 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 ### 6.1 Source Management — Manual (GUI)
 
 - User can add a file or folder as a watch source via a native folder/file picker.
+- User must choose Mirror or Zipped when adding Sources; the modes are mutually exclusive.
 - Every source is backed up to every configured destination automatically.
 - User can remove a source; removal stops watching but does not delete existing backup data.
 - Sources list shown in a management window: path, type (file/folder), assigned destinations, last sync time, current status (synced / pending / dirty / error).
@@ -70,6 +71,7 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 ### 6.2 Source Management — Projects Auto-Discovery
 
 - User can configure one or more Projects Root paths.
+- User must choose Mirror or Zipped when adding a Projects Root; the selected mode applies to all opted-in projects below it.
 - The app discovers opted-in folders recursively when a Root is added and when `ReadDirectoryChangesW` reports marker or Git-boundary changes. It does not poll Projects Roots.
 - A folder at any depth is included as a watched project only if it contains a `.backup-watch` marker file (empty file, presence = opt-in).
 - Within an opted-in project root, any immediate subfolder containing a `.git` directory is treated as a codebase and excluded automatically — not watched, not backed up.
@@ -90,17 +92,18 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 - Exit code handling: robocopy uses a bitmask exit code where values 0–7 indicate success variants; only treat ≥8 as failure. Log and surface non-fatal mismatches (code 4+) distinctly from real errors.
 - Sync runs sequentially per destination to avoid saturating a single removable drive; syncs to different destinations can run in parallel.
 
-### 6.5 Backup Engine — Dated Snapshots
+### 6.5 Backup Engine — Zipped Backups
 
-- Independent scheduled job per source root, default interval configurable (e.g., every 24h), reads from the **source**, not from the mirrored destination, to avoid slow round-trips through USB.
-- Produces `Snapshots/<root-name>_<yyyy-MM-dd_HHmm>.zip` on each assigned destination.
-- Retention policy: keep last N snapshots or last N days (configurable per destination or globally); prune oldest on each successful new snapshot.
-- Snapshot job skips a destination that isn't currently connected; it does not queue (next scheduled run will pick it up naturally).
+- Runs from the same persisted dirty state as Mirror mode and reads directly from the source.
+- Produces `BackItUpTool/Zipped/<original-path>/<name>_<UTC timestamp>.zip` on every available destination.
+- Uses libarchive's maximum ZIP compression level (9).
+- Keeps one daily archive for 30 days and one monthly archive for 12 months.
+- Work for an unavailable destination remains pending and is resumed by a Windows device-arrival event or `Run now`.
 
 ### 6.6 Destination Management
 
 - Destination types: **Removable** (identified by volume serial number + label, not drive letter) and **Path** (fixed local folder or UNC path).
-- Removable-drive detection uses `RegisterDeviceNotification` on a hidden message-only window listening for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; on arrival, match by volume serial via `GetVolumeInformation` against configured destinations.
+- Removable-drive detection uses `RegisterDeviceNotification` on the hidden tray window listening for `DBT_DEVICEARRIVAL`/`DBT_DEVICEREMOVECOMPLETE`; on arrival, match by volume serial via `GetVolumeInformation` against configured destinations. USB detection never polls.
 - Dirty flags for a `(source, destination)` pair persist to disk (`dirty-state.json`) so pending work survives an app restart, not just a drive reconnect.
 - On destination reconnect, all persisted dirty pairs for that destination are flushed immediately.
 - Tray/UI must clearly show per-destination connection state (connected / not connected / syncing / N pending).
@@ -109,7 +112,7 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 
 - Tray icon reflects overall state (idle/synced, syncing, pending changes, error).
 - Right-click menu: Open dashboard, Sync now (all), Pause/Resume watching, Open log folder, Exit.
-- Dashboard window: sources list (6.1), destinations list with connection status, settings (Projects parent path, debounce interval, snapshot interval/retention).
+- Dashboard window: Sources, Projects Roots, Destinations, backup status, Activity, and Settings.
 
 ### 6.8 Configuration
 
@@ -117,19 +120,18 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 - Schema (illustrative):
 ```json
 {
+  "schemaVersion": 2,
   "manualSources": [
-    { "path": "C:\\Users\\Burak\\Documents\\Notes", "destinations": ["dest-flash", "dest-nas"] }
+    { "id": "source-notes", "path": "C:\\Users\\Burak\\Documents\\Notes", "kind": "folder", "backupMode": "mirror" }
   ],
-  "projectsParent": "D:\\Projects",
+  "projectsRoots": [
+    { "id": "projects-main", "path": "D:\\Projects", "backupMode": "zipped" }
+  ],
   "destinations": [
     { "id": "dest-flash", "kind": "removable", "volumeSerial": "1A2B-3C4D", "label": "BACKUP", "root": "\\Backups" },
     { "id": "dest-nas",   "kind": "path", "path": "\\\\NAS\\backups" }
   ],
-  "settings": {
-    "debounceSeconds": 8,
-    "snapshotIntervalHours": 24,
-    "snapshotRetentionDays": 30
-  }
+  "settings": { "debounceSeconds": 8 }
 }
 ```
 
@@ -142,7 +144,7 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 
 ## 8. Open Questions / Future Considerations
 
-- Should snapshot zips be encrypted/password-protected given they may leave the machine on a flash drive?
+- Should Zipped backups be encrypted/password-protected given they may leave the machine on a flash drive?
 - Multi-machine scenario: if the same Projects folder is ever accessed from two machines, dirty-state and destination matching need a machine identifier — out of scope for v1 but worth keeping in mind in the data model.
 - Cloud destination support (v2): would slot in as a new `kind` in the destinations schema; sync mechanism would differ from robocopy (likely a separate uploader module) but source/watcher layer is unaffected.
 
@@ -178,16 +180,16 @@ Single process, no elevation required, starts via Startup-folder shortcut on log
 - Handle destination unavailable mid-sync (drive pulled during robocopy) gracefully — mark pair dirty again, no crash.
 - Deliverable: full manual-source backup flow working end-to-end with a real flash drive, survives disconnect/reconnect cycles.
 
-## Phase 5 — Dated Snapshots
-- Implement snapshot scheduler (per-source-root timer).
-- Implement zip creation (bundle miniz or similar) from source directly.
+## Phase 5 — Zipped Backups
+- Use the same event-driven pending state as Mirror mode.
+- Implement level-9 ZIP creation from source directly.
 - Implement retention pruning.
-- Deliverable: snapshots appear on schedule per destination, old ones pruned per retention policy.
+- Deliverable: changed Zipped sources are archived to every available destination and old archives are pruned.
 
 ## Phase 6 — Projects Auto-Discovery
 - Implement Projects-parent scanner: marker file detection (`.backup-watch`), git-folder exclusion, optional `.backup-ignore` gitignore-pattern parsing.
 - Wire discovered project sources into the same Source Registry used by manual sources (Phases 2–5 apply unchanged).
-- Implement periodic + event-driven rescanning of the Projects parent to catch added/removed markers and newly git-init'd subfolders.
+- Implement event-driven rescanning of Projects Roots to catch added/removed markers and newly git-init'd subfolders.
 - Deliverable: pointing the app at the real `Projects/` folder correctly watches and backs up only the intended non-codebase content.
 
 ## Phase 7 — Polish

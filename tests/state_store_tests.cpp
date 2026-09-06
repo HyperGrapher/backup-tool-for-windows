@@ -120,7 +120,7 @@ TEST_CASE("Project backup decisions persist") {
     store.setProjectBackupDecision("project-one", ProjectBackupDecision::alwaysAllow,
                                    "2026-08-10T16:00:00Z");
     REQUIRE(store.projectBackupDecision("project-one") == ProjectBackupDecision::alwaysAllow);
-    store.setProjectBackupDecision("project-one", ProjectBackupDecision::ignorePermanently,
+    store.setProjectBackupDecision("project-one", ProjectBackupDecision::ignoreLargeFiles,
                                    "2026-08-10T16:01:00Z");
-    REQUIRE(store.projectBackupDecision("project-one") == ProjectBackupDecision::ignorePermanently);
+    REQUIRE(store.projectBackupDecision("project-one") == ProjectBackupDecision::ignoreLargeFiles);
 }

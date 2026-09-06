@@ -58,7 +58,7 @@ TEST_CASE("a watched change becomes a pending mirror and is reconciled") {
     config.manualSources.push_back(ManualSource{"source-one", sourceFolder, ManualSourceKind::folder});
     config.destinations.push_back(
         Destination{"destination-one", "Test Destination", DestinationKind::path, destinationFolder, 0, {}});
-    config.routes.push_back(BackupRoute{"source-one", "destination-one", true, false, {}});
+    config.routes.push_back(BackupRoute{"source-one", "destination-one"});
     StateStore stateStore{directory.path() / "state.db"};
 
     std::mutex notificationMutex;
@@ -86,8 +86,9 @@ TEST_CASE("a watched change becomes a pending mirror and is reconciled") {
     REQUIRE(pendingState->isDirty);
 
     BackupEngine engine;
-    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
-    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, directory.path() / "logs");
+    const std::vector<BackupPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
+    const BackupRunSummary summary = engine.runMirrors(
+        plans, stateStore, directory.path() / "logs", config.settings.largeFileThresholdBytes);
     REQUIRE(summary.succeeded == 1);
     REQUIRE(summary.failed == 0);
 
@@ -141,29 +142,5 @@ TEST_CASE("a Projects Root watch reacts to marker changes but ignores normal pro
         std::unique_lock lock(notificationMutex);
         REQUIRE(notificationCondition.wait_for(lock, std::chrono::seconds{5}, [&] { return wasNotified; }));
     }
-    watcher.stop();
-}
-
-TEST_CASE("an unavailable watched folder is retried when it returns") {
-    WatcherTemporaryDirectory directory;
-    const std::filesystem::path sourceFolder = directory.path() / "later";
-    std::mutex notificationMutex;
-    std::condition_variable notificationCondition;
-    bool wasNotified = false;
-
-    SourceWatcher watcher;
-    watcher.start({ManualSource{"source-one", sourceFolder, ManualSourceKind::folder}}, 1,
-                  [&](const std::string&) {
-                      const std::scoped_lock lock(notificationMutex);
-                      wasNotified = true;
-                      notificationCondition.notify_one();
-                  });
-    REQUIRE(watcher.watchedSourceCount() == 0);
-    std::filesystem::create_directories(sourceFolder);
-    {
-        std::unique_lock lock(notificationMutex);
-        REQUIRE(notificationCondition.wait_for(lock, std::chrono::seconds{10}, [&] { return wasNotified; }));
-    }
-    REQUIRE(watcher.watchedSourceCount() == 1);
     watcher.stop();
 }

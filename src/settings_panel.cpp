@@ -80,7 +80,7 @@ SettingsPanel::SettingsPanel(int x, int y, int width, int height, BackupConfig& 
 
     addLabel(x + 16, y + 10, width - 32, 28, "Settings", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
     addLabel(x + 16, y + 36, width - 32, 20,
-             "These values control when changes settle and when Project backups need approval.", 11,
+             "These values control when changes settle and which Project files need approval.", 11,
              UiTheme::kSecondaryText);
 
     addLabel(x + 16, y + 72, width - 32, 22, "Watching", 13, UiTheme::kText, UiTheme::kUiFontSemibold);
@@ -102,12 +102,7 @@ SettingsPanel::SettingsPanel(int x, int y, int width, int height, BackupConfig& 
     styleInput(*largeFileInput_);
     addLabel(x + 348, y + 236, 120, 28, "MiB per file", 11, UiTheme::kSecondaryText);
 
-    addLabel(x + 16, y + 274, 230, 30, "Large Project warning", 12, UiTheme::kText);
-    projectSizeInput_ = new Fl_Int_Input(x + 250, y + 274, 90, 28);
-    styleInput(*projectSizeInput_);
-    addLabel(x + 348, y + 274, 220, 28, "MiB after excluded content", 11, UiTheme::kSecondaryText);
-
-    saveButton_ = new Fl_Button(x + 250, y + 322, 112, 30, "Save settings");
+    saveButton_ = new Fl_Button(x + 250, y + 286, 112, 30, "Save settings");
     styleButton(*saveButton_);
     saveButton_->callback(saveCallback, this);
 
@@ -120,10 +115,8 @@ SettingsPanel::SettingsPanel(int x, int y, int width, int height, BackupConfig& 
 void SettingsPanel::refresh() {
     const std::string debounce = std::to_string(config_.settings.debounceSeconds);
     const std::string largeFile = std::to_string(config_.settings.largeFileThresholdBytes / kBytesPerMiB);
-    const std::string projectSize = std::to_string(config_.settings.projectSizeThresholdBytes / kBytesPerMiB);
     debounceInput_->value(debounce.c_str());
     largeFileInput_->value(largeFile.c_str());
-    projectSizeInput_->value(projectSize.c_str());
     resultSummary_->copy_label("Changes are saved in config.json and applied immediately.");
     redraw();
 }
@@ -138,8 +131,6 @@ void SettingsPanel::save() {
         updated.settings.debounceSeconds = positiveInt(debounceInput_->value(), "Settle delay");
         updated.settings.largeFileThresholdBytes =
             static_cast<std::uint64_t>(positiveInt(largeFileInput_->value(), "Large file warning")) * kBytesPerMiB;
-        updated.settings.projectSizeThresholdBytes =
-            static_cast<std::uint64_t>(positiveInt(projectSizeInput_->value(), "Large Project warning")) * kBytesPerMiB;
         configStore_.save(updated);
         config_ = std::move(updated);
         configChangedCallback_();

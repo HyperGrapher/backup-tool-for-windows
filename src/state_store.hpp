@@ -19,7 +19,7 @@ enum class RouteStatus {
 
 enum class ProjectBackupDecision {
     alwaysAllow,
-    ignorePermanently,
+    ignoreLargeFiles,
 };
 
 struct RouteRuntimeState {
@@ -45,7 +45,7 @@ struct ActivityRecord {
     bool operator==(const ActivityRecord&) const = default;
 };
 
-struct SnapshotRecord {
+struct ArchiveRecord {
     std::int64_t id{};
     std::string sourceId;
     std::string destinationId;
@@ -75,14 +75,14 @@ public:
                               std::string_view successUtc);
     void completeRouteFailure(std::string_view sourceId, std::string_view destinationId, std::string_view error);
 
-    [[nodiscard]] std::optional<std::string> latestSnapshotUtc(std::string_view sourceId,
-                                                                std::string_view destinationId) const;
-    [[nodiscard]] std::optional<std::string> latestSnapshotUtc() const;
-    [[nodiscard]] std::vector<SnapshotRecord> snapshotRecords(std::string_view sourceId,
-                                                               std::string_view destinationId) const;
-    void recordSnapshot(std::string_view sourceId, std::string_view destinationId, std::string_view createdUtc,
-                        const std::filesystem::path& archivePath, std::uintmax_t archiveBytes);
-    void removeSnapshotRecord(std::int64_t id);
+    [[nodiscard]] std::optional<std::string> latestArchiveUtc(std::string_view sourceId,
+                                                              std::string_view destinationId) const;
+    [[nodiscard]] std::optional<std::string> latestArchiveUtc() const;
+    [[nodiscard]] std::vector<ArchiveRecord> archiveRecords(std::string_view sourceId,
+                                                             std::string_view destinationId) const;
+    void recordArchive(std::string_view sourceId, std::string_view destinationId, std::string_view createdUtc,
+                       const std::filesystem::path& archivePath, std::uintmax_t archiveBytes);
+    void removeArchiveRecord(std::int64_t id);
 
     void appendActivity(std::string_view occurredUtc, std::string_view severity, std::string_view message,
                         std::optional<std::string_view> sourceId = std::nullopt,

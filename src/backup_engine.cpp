@@ -69,28 +69,21 @@ namespace {
     return candidateText == parentText.substr(0, parentText.size() - 1) || candidateText.starts_with(parentText);
 }
 
-[[nodiscard]] const ManualSource& findManualSource(const BackupConfig& config, const std::string& id) {
-    const auto source = std::ranges::find(config.manualSources, id, &ManualSource::id);
-    if (source == config.manualSources.end()) {
-        throw std::runtime_error("This initial mirror only supports Manual Sources.");
-    }
-    return *source;
-}
-
 [[nodiscard]] const ProjectsRoot* findProjectsRoot(const BackupConfig& config, const std::string& id) {
     const auto root = std::ranges::find(config.projectsRoots, id, &ProjectsRoot::id);
     return root == config.projectsRoots.end() ? nullptr : &*root;
 }
 
-[[nodiscard]] std::filesystem::path destinationRoot(const Destination& destination) {
+[[nodiscard]] std::filesystem::path destinationRoot(const Destination& destination,
+                                                    const std::vector<ConnectedVolume>& connectedVolumes) {
     if (destination.kind == DestinationKind::path) {
         if (!std::filesystem::exists(destination.root)) {
             throw std::runtime_error("Destination folder is unavailable: " + pathToUtf8(destination.root));
         }
         return destination.root;
     }
-    const auto volume = findConnectedRemovableVolume(destination.volumeSerial);
-    if (!volume.has_value()) {
+    const auto volume = std::ranges::find(connectedVolumes, destination.volumeSerial, &ConnectedVolume::serial);
+    if (volume == connectedVolumes.end()) {
         throw std::runtime_error("Removable Destination is unavailable: " + destination.name);
     }
     return volume->root;
@@ -125,8 +118,8 @@ namespace {
 void runTarZip(const std::filesystem::path& source, const std::filesystem::path& archivePath) {
     const std::filesystem::path parent = source.parent_path();
     const std::filesystem::path name = source.filename();
-    std::wstring command = L"tar.exe -a -c -f " + quoteArgument(archivePath) + L" -C " + quoteArgument(parent) +
-                           L" " + quoteArgument(name);
+    std::wstring command = L"tar.exe -a -c --options zip:compression-level=9 -f " + quoteArgument(archivePath) +
+                           L" -C " + quoteArgument(parent) + L" " + quoteArgument(name);
     std::vector<wchar_t> writable(command.begin(), command.end());
     writable.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -136,7 +129,7 @@ void runTarZip(const std::filesystem::path& source, const std::filesystem::path&
     PROCESS_INFORMATION process{};
     if (CreateProcessW(nullptr, writable.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
                        &process) == FALSE) {
-        throw std::runtime_error("Unable to start Windows tar for the ZIP snapshot.");
+        throw std::runtime_error("Unable to start Windows tar for the ZIP archive.");
     }
     WaitForSingleObject(process.hProcess, INFINITE);
     DWORD exitCode{};
@@ -144,30 +137,32 @@ void runTarZip(const std::filesystem::path& source, const std::filesystem::path&
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
     if (receivedCode == FALSE || exitCode != 0) {
-        throw std::runtime_error("ZIP snapshot creation failed.");
+        throw std::runtime_error("ZIP archive creation failed.");
     }
 }
 
-void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path& archivePath) {
-    const ProjectContents contents = collectProjectContents(source);
+void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path& archivePath,
+                      std::optional<std::uint64_t> maximumFileSizeBytes) {
+    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes);
     const std::filesystem::path listPath = std::filesystem::temp_directory_path() /
                                            (L"BackItUpTool-" + std::filesystem::path{generateUuid()}.wstring() +
                                             L".txt");
     try {
         std::ofstream list{listPath, std::ios::binary | std::ios::trunc};
         if (!list) {
-            throw std::runtime_error("Unable to create the Project snapshot file list.");
+            throw std::runtime_error("Unable to create the Project archive file list.");
         }
         for (const EligibleProjectFile& file : contents.files) {
             list << pathToGenericUtf8(source.path.filename() / file.relativePath) << '\n';
         }
         list.close();
         if (!list) {
-            throw std::runtime_error("Unable to write the Project snapshot file list.");
+            throw std::runtime_error("Unable to write the Project archive file list.");
         }
 
-        std::wstring command = L"tar.exe -a -c -f " + quoteArgument(archivePath) + L" -C " +
-                               quoteArgument(source.path.parent_path()) + L" -T " + quoteArgument(listPath);
+        std::wstring command = L"tar.exe -a -c --options zip:compression-level=9 -f " +
+                               quoteArgument(archivePath) + L" -C " + quoteArgument(source.path.parent_path()) +
+                               L" -T " + quoteArgument(listPath);
         std::vector<wchar_t> writable(command.begin(), command.end());
         writable.push_back(L'\0');
         STARTUPINFOW startup{};
@@ -177,7 +172,7 @@ void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path&
         PROCESS_INFORMATION process{};
         if (CreateProcessW(nullptr, writable.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
                            &startup, &process) == FALSE) {
-            throw std::runtime_error("Unable to start Windows tar for the Project ZIP snapshot.");
+            throw std::runtime_error("Unable to start Windows tar for the Project ZIP archive.");
         }
         WaitForSingleObject(process.hProcess, INFINITE);
         DWORD exitCode{};
@@ -185,7 +180,7 @@ void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path&
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         if (receivedCode == FALSE || exitCode != 0) {
-            throw std::runtime_error("Project ZIP snapshot creation failed.");
+            throw std::runtime_error("Project ZIP archive creation failed.");
         }
     } catch (...) {
         std::error_code ignoredError;
@@ -205,34 +200,19 @@ void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path&
     return text.str();
 }
 
-[[nodiscard]] bool isSnapshotDue(const std::optional<std::string>& latestSnapshot, int intervalHours) {
-    if (!latestSnapshot.has_value()) {
-        return true;
-    }
-    std::tm timestamp{};
-    std::istringstream input{*latestSnapshot};
-    input >> std::get_time(&timestamp, "%Y-%m-%dT%H:%M:%SZ");
-    if (input.fail()) {
-        return true;
-    }
-    const std::time_t previous = _mkgmtime(&timestamp);
-    const std::time_t current = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    return std::difftime(current, previous) >= static_cast<double>(intervalHours) * 60.0 * 60.0;
-}
-
-void pruneSnapshots(const BackupRoute& route, std::string_view sourceId, std::string_view destinationId,
-                    StateStore& stateStore) {
-    const std::vector<SnapshotRecord> records = stateStore.snapshotRecords(sourceId, destinationId);
+void pruneArchives(std::string_view sourceId, std::string_view destinationId, StateStore& stateStore) {
+    constexpr std::size_t kRetainDailyArchives = 30;
+    constexpr std::size_t kRetainMonthlyArchives = 12;
+    const std::vector<ArchiveRecord> records = stateStore.archiveRecords(sourceId, destinationId);
     std::set<std::string> keptDays;
     std::set<std::string> keptMonths;
-    for (const SnapshotRecord& record : records) {
+    for (const ArchiveRecord& record : records) {
         const std::string day = record.createdUtc.substr(0, 10);
         const std::string month = record.createdUtc.substr(0, 7);
         bool keep = false;
-        if (keptDays.size() < static_cast<std::size_t>(route.snapshotPolicy.retainDaily) && keptDays.insert(day).second) {
+        if (keptDays.size() < kRetainDailyArchives && keptDays.insert(day).second) {
             keep = true;
-        } else if (keptMonths.size() < static_cast<std::size_t>(route.snapshotPolicy.retainMonthly) &&
-                   keptMonths.insert(month).second) {
+        } else if (keptMonths.size() < kRetainMonthlyArchives && keptMonths.insert(month).second) {
             keep = true;
         }
         if (keep) {
@@ -241,7 +221,7 @@ void pruneSnapshots(const BackupRoute& route, std::string_view sourceId, std::st
         std::error_code error;
         std::filesystem::remove(record.archivePath, error);
         if (!error || !std::filesystem::exists(record.archivePath)) {
-            stateStore.removeSnapshotRecord(record.id);
+            stateStore.removeArchiveRecord(record.id);
         }
     }
 }
@@ -272,8 +252,9 @@ void pruneSnapshots(const BackupRoute& route, std::string_view sourceId, std::st
     return difference > std::chrono::seconds{2};
 }
 
-void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::path& destination) {
-    const ProjectContents contents = collectProjectContents(source);
+void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::path& destination,
+                           std::optional<std::uint64_t> maximumFileSizeBytes) {
+    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes);
     std::filesystem::create_directories(destination);
     std::set<std::filesystem::path> eligiblePaths;
     for (const EligibleProjectFile& file : contents.files) {
@@ -330,6 +311,16 @@ void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::
     }
 }
 
+[[nodiscard]] std::optional<std::uint64_t> projectMaximumFileSize(const BackupPlan& plan,
+                                                                  const StateStore& stateStore,
+                                                                  std::uint64_t largeFileThresholdBytes) {
+    if (!plan.isProjectsSource ||
+        stateStore.projectBackupDecision(plan.sourceId) != ProjectBackupDecision::ignoreLargeFiles) {
+        return std::nullopt;
+    }
+    return largeFileThresholdBytes;
+}
+
 }  // namespace
 
 std::filesystem::path buildMirrorRelativePath(const std::filesystem::path& sourcePath) {
@@ -345,43 +336,69 @@ std::filesystem::path buildMirrorRelativePath(const std::filesystem::path& sourc
     throw std::runtime_error("Source must use an absolute drive or network path.");
 }
 
-std::vector<MirrorPlan> BackupEngine::previewMirrors(
-    const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources) const {
-    std::vector<MirrorPlan> plans;
-    for (const BackupRoute& route : config.routes) {
-        if (!route.isMirrorEnabled) {
-            continue;
-        }
-        const auto destination = std::ranges::find(config.destinations, route.destinationId, &Destination::id);
-        if (destination == config.destinations.end()) {
-            throw std::runtime_error("Route has an unavailable Destination.");
-        }
-        std::filesystem::path availableDestinationRoot;
+std::vector<BackupPlan> BackupEngine::previewBackups(
+    const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+    BackupMode backupMode) const {
+    const bool hasMatchingSource =
+        std::ranges::any_of(config.manualSources, [&](const ManualSource& source) {
+            return source.backupMode == backupMode;
+        }) || std::ranges::any_of(config.projectsRoots, [&](const ProjectsRoot& root) {
+            return root.backupMode == backupMode;
+        });
+    if (!hasMatchingSource) {
+        return {};
+    }
+
+    std::vector<ConnectedVolume> connectedVolumes;
+    try {
+        connectedVolumes = findConnectedRemovableVolumes();
+    } catch (const std::exception&) {
+    }
+
+    std::map<std::string, std::filesystem::path> availableDestinations;
+    for (const Destination& destination : config.destinations) {
         try {
-            availableDestinationRoot = destinationRoot(*destination);
+            availableDestinations.emplace(destination.id, destinationRoot(destination, connectedVolumes));
         } catch (const std::exception&) {
+            // Work remains pending until Windows reports that the Destination is available.
+        }
+    }
+
+    std::vector<BackupPlan> plans;
+    for (const BackupRoute& route : config.routes) {
+        const auto destination = std::ranges::find(config.destinations, route.destinationId, &Destination::id);
+        const auto availableDestination = availableDestinations.find(route.destinationId);
+        if (destination == config.destinations.end() || availableDestination == availableDestinations.end()) {
             continue;
         }
+        const std::filesystem::path& availableDestinationRoot = availableDestination->second;
         const auto manualSource = std::ranges::find(config.manualSources, route.sourceId, &ManualSource::id);
         if (manualSource != config.manualSources.end()) {
-            if (!std::filesystem::exists(manualSource->path)) {
-                throw std::runtime_error("Source is unavailable: " + pathToUtf8(manualSource->path));
+            if (manualSource->backupMode != backupMode) {
+                continue;
             }
-            const std::filesystem::path target = availableDestinationRoot / L"BackItUpTool" / L"Mirrors" /
-                                                 buildMirrorRelativePath(manualSource->path);
+            if (!std::filesystem::exists(manualSource->path)) {
+                continue;
+            }
+            const std::filesystem::path relativePath = buildMirrorRelativePath(manualSource->path);
+            const std::filesystem::path target =
+                backupMode == BackupMode::mirror
+                    ? availableDestinationRoot / L"BackItUpTool" / L"Mirrors" / relativePath
+                    : availableDestinationRoot / L"BackItUpTool" / L"Zipped" / relativePath.parent_path();
             const std::filesystem::path sourceRoot = manualSource->kind == ManualSourceKind::folder
                                                          ? manualSource->path
                                                          : manualSource->path.parent_path();
             if (isSameOrInside(target, sourceRoot) || isSameOrInside(sourceRoot, target)) {
-                throw std::runtime_error("Refusing a mirror whose Source and Destination overlap.");
+                throw std::runtime_error("Refusing a backup whose Source and Destination overlap.");
             }
-            plans.push_back(MirrorPlan{route.sourceId, manualSource->id, destination->id, manualSource->path, target,
+            plans.push_back(BackupPlan{route.sourceId, manualSource->id, destination->id, manualSource->path, target,
                                        manualSource->kind, false});
             continue;
         }
 
-        if (findProjectsRoot(config, route.sourceId) == nullptr) {
-            throw std::runtime_error("Route has an unavailable Source.");
+        const ProjectsRoot* projectsRoot = findProjectsRoot(config, route.sourceId);
+        if (projectsRoot == nullptr || projectsRoot->backupMode != backupMode) {
+            continue;
         }
         for (const ConfiguredProjectsSource& configuredSource : projectsSources) {
             if (configuredSource.rootId != route.sourceId) {
@@ -392,84 +409,58 @@ std::vector<MirrorPlan> BackupEngine::previewMirrors(
                 std::filesystem::exists(source.path / L".git")) {
                 continue;
             }
-            const std::filesystem::path target = availableDestinationRoot / L"BackItUpTool" / L"Mirrors" /
-                                                 buildMirrorRelativePath(source.path);
+            const std::filesystem::path relativePath = buildMirrorRelativePath(source.path);
+            const std::filesystem::path target =
+                backupMode == BackupMode::mirror
+                    ? availableDestinationRoot / L"BackItUpTool" / L"Mirrors" / relativePath
+                    : availableDestinationRoot / L"BackItUpTool" / L"Zipped" / relativePath.parent_path();
             if (isSameOrInside(target, source.path) || isSameOrInside(source.path, target)) {
-                throw std::runtime_error("Refusing a mirror whose Source and Destination overlap.");
+                throw std::runtime_error("Refusing a backup whose Source and Destination overlap.");
             }
-            plans.push_back(MirrorPlan{route.sourceId, source.id, destination->id, source.path, target,
+            plans.push_back(BackupPlan{route.sourceId, source.id, destination->id, source.path, target,
                                        ManualSourceKind::folder, true});
         }
     }
     return plans;
 }
 
-std::vector<MirrorPlan> BackupEngine::previewPendingMirrors(const BackupConfig& config,
-                                                            const std::vector<ConfiguredProjectsSource>& projectsSources,
-                                                            const StateStore& stateStore) const {
-    std::vector<MirrorPlan> pendingPlans;
-    for (const BackupRoute& route : config.routes) {
-        if (!route.isMirrorEnabled) {
-            continue;
-        }
-        BackupConfig singleRouteConfig = config;
-        singleRouteConfig.routes = {route};
-        try {
-            std::vector<MirrorPlan> routePlans = previewMirrors(singleRouteConfig, projectsSources);
-            for (MirrorPlan& plan : routePlans) {
-                const std::optional<RouteRuntimeState> state =
-                    stateStore.routeState(plan.sourceId, plan.destinationId);
-                if (state.has_value() && state->isDirty) {
-                    pendingPlans.push_back(std::move(plan));
-                }
-            }
-        } catch (const std::exception&) {
-            // Pending work stays in SQLite until its Source and Destination are available again.
+std::vector<BackupPlan> BackupEngine::previewMirrors(
+    const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources) const {
+    return previewBackups(config, projectsSources, BackupMode::mirror);
+}
+
+std::vector<BackupPlan> BackupEngine::previewPendingBackups(
+    const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+    const StateStore& stateStore, BackupMode backupMode) const {
+    std::vector<BackupPlan> pendingPlans;
+    for (BackupPlan& plan : previewBackups(config, projectsSources, backupMode)) {
+        const std::optional<RouteRuntimeState> state = stateStore.routeState(plan.sourceId, plan.destinationId);
+        if (state.has_value() && state->isDirty) {
+            pendingPlans.push_back(std::move(plan));
         }
     }
     return pendingPlans;
 }
 
-std::vector<MirrorPlan> BackupEngine::previewDueSnapshots(
+std::vector<BackupPlan> BackupEngine::previewPendingMirrors(
     const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
     const StateStore& stateStore) const {
-    BackupConfig snapshotConfig = config;
-    std::erase_if(snapshotConfig.routes, [](const BackupRoute& route) {
-        return !route.areSnapshotsEnabled;
-    });
-    for (BackupRoute& route : snapshotConfig.routes) {
-        route.isMirrorEnabled = true;
-    }
+    return previewPendingBackups(config, projectsSources, stateStore, BackupMode::mirror);
+}
 
-    std::vector<MirrorPlan> duePlans;
-    for (const BackupRoute& snapshotRoute : snapshotConfig.routes) {
-        BackupConfig singleRouteConfig = snapshotConfig;
-        singleRouteConfig.routes = {snapshotRoute};
-        try {
-            for (MirrorPlan& plan : previewMirrors(singleRouteConfig, projectsSources)) {
-                const auto configuredRoute = std::ranges::find_if(config.routes, [&](const BackupRoute& candidate) {
-                    return candidate.sourceId == plan.routeSourceId && candidate.destinationId == plan.destinationId;
-                });
-                if (configuredRoute != config.routes.end() &&
-                    isSnapshotDue(stateStore.latestSnapshotUtc(plan.sourceId, plan.destinationId),
-                                  configuredRoute->snapshotPolicy.intervalHours)) {
-                    duePlans.push_back(std::move(plan));
-                }
-            }
-        } catch (const std::exception&) {
-            // An unavailable Source or Destination is retried by the next scheduled check.
-        }
-    }
-    return duePlans;
+std::vector<BackupPlan> BackupEngine::previewPendingArchives(
+    const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+    const StateStore& stateStore) const {
+    return previewPendingBackups(config, projectsSources, stateStore, BackupMode::zipped);
 }
 
 std::vector<SizeWarning> BackupEngine::findSizeWarnings(const BackupConfig& config,
-                                                        const std::vector<MirrorPlan>& plans,
+                                                        const std::vector<BackupPlan>& plans,
                                                         const StateStore& stateStore) const {
     std::vector<SizeWarning> warnings;
     std::map<std::string, ProjectPreflight> preflights;
     std::set<std::string> warnedSources;
-    for (const MirrorPlan& plan : plans) {
+    for (const BackupPlan& plan : plans) {
         if (plan.isProjectsSource) {
             const std::optional<ProjectBackupDecision> decision = stateStore.projectBackupDecision(plan.sourceId);
             if (decision.has_value() || !warnedSources.insert(plan.sourceId).second) {
@@ -490,52 +481,56 @@ std::vector<SizeWarning> BackupEngine::findSizeWarnings(const BackupConfig& conf
     return warnings;
 }
 
-BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
-                                          StateStore& stateStore, const std::filesystem::path& logDirectory) const {
+BackupRunSummary BackupEngine::runMirrors(const std::vector<BackupPlan>& plans, StateStore& stateStore,
+                                          const std::filesystem::path& logDirectory,
+                                          std::uint64_t largeFileThresholdBytes) const {
     std::filesystem::create_directories(logDirectory);
-    std::map<std::string, std::vector<MirrorPlan>> plansByDestination;
-    for (const MirrorPlan& plan : plans) {
+    std::map<std::string, std::vector<BackupPlan>> plansByDestination;
+    for (const BackupPlan& plan : plans) {
         plansByDestination[plan.destinationId].push_back(plan);
     }
 
-    const auto runDestination = [this, &config, &stateStore, &logDirectory](const std::vector<MirrorPlan>& destinationPlans) {
+    const auto runDestination = [&stateStore, &logDirectory,
+                                 largeFileThresholdBytes](const std::vector<BackupPlan>& destinationPlans) {
         BackupRunSummary summary;
-        for (const MirrorPlan& plan : destinationPlans) {
-        const std::string attemptTime = utcNow();
-        stateStore.beginRouteAttempt(plan.sourceId, plan.destinationId, attemptTime);
-        try {
-            DWORD exitCode = 1;
-            if (plan.isProjectsSource) {
-                mirrorProjectContents(ProjectsSource{plan.sourceId, plan.source}, plan.destination);
-            } else if (plan.sourceKind == ManualSourceKind::file) {
-                std::filesystem::create_directories(plan.destination.parent_path());
-                std::filesystem::copy_file(plan.source, plan.destination,
-                                           std::filesystem::copy_options::overwrite_existing);
-            } else {
-                std::filesystem::create_directories(plan.destination);
-                exitCode = runRobocopy(plan.source, plan.destination,
-                                       logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"));
-            }
-            if (exitCode >= 8) {
-                const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + " (robocopy " + std::to_string(exitCode) + ").";
+        for (const BackupPlan& plan : destinationPlans) {
+            const std::string attemptTime = utcNow();
+            stateStore.beginRouteAttempt(plan.sourceId, plan.destinationId, attemptTime);
+            try {
+                DWORD exitCode = 1;
+                if (plan.isProjectsSource) {
+                    mirrorProjectContents(ProjectsSource{plan.sourceId, plan.source}, plan.destination,
+                                          projectMaximumFileSize(plan, stateStore, largeFileThresholdBytes));
+                } else if (plan.sourceKind == ManualSourceKind::file) {
+                    std::filesystem::create_directories(plan.destination.parent_path());
+                    std::filesystem::copy_file(plan.source, plan.destination,
+                                               std::filesystem::copy_options::overwrite_existing);
+                } else {
+                    std::filesystem::create_directories(plan.destination);
+                    exitCode = runRobocopy(plan.source, plan.destination,
+                                           logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"));
+                }
+                if (exitCode >= 8) {
+                    const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + " (robocopy " +
+                                                std::to_string(exitCode) + ").";
+                    stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
+                    stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
+                    summary.messages.push_back(message);
+                    ++summary.failed;
+                    continue;
+                }
+                const std::string message = "Mirror completed for " + pathToUtf8(plan.source) + ".";
+                stateStore.completeRouteSuccess(plan.sourceId, plan.destinationId, utcNow());
+                stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
+                summary.messages.push_back(message);
+                ++summary.succeeded;
+            } catch (const std::exception& error) {
+                const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + ": " + error.what();
                 stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
                 stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
                 summary.messages.push_back(message);
                 ++summary.failed;
-                continue;
             }
-            const std::string message = "Mirror completed for " + pathToUtf8(plan.source) + ".";
-            stateStore.completeRouteSuccess(plan.sourceId, plan.destinationId, utcNow());
-            stateStore.appendActivity(attemptTime, "info", message, plan.sourceId, plan.destinationId);
-            summary.messages.push_back(message);
-            ++summary.succeeded;
-        } catch (const std::exception& error) {
-            const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + ": " + error.what();
-            stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
-            stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
-            summary.messages.push_back(message);
-            ++summary.failed;
-        }
         }
         return summary;
     };
@@ -559,23 +554,20 @@ BackupRunSummary BackupEngine::runMirrors(const BackupConfig& config, const std:
     return summary;
 }
 
-BackupRunSummary BackupEngine::runSnapshots(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
-                                            StateStore& stateStore) const {
+BackupRunSummary BackupEngine::runArchives(const std::vector<BackupPlan>& plans, StateStore& stateStore,
+                                           std::uint64_t largeFileThresholdBytes) const {
     BackupRunSummary summary;
-    for (const MirrorPlan& plan : plans) {
+    for (const BackupPlan& plan : plans) {
+        const std::string attemptTime = utcNow();
+        stateStore.beginRouteAttempt(plan.sourceId, plan.destinationId, attemptTime);
         try {
-            const auto route = std::ranges::find_if(config.routes, [&](const BackupRoute& candidate) {
-                return candidate.sourceId == plan.routeSourceId && candidate.destinationId == plan.destinationId;
-            });
-            const auto destination = std::ranges::find(config.destinations, plan.destinationId, &Destination::id);
-            if (route == config.routes.end() || destination == config.destinations.end() || !route->areSnapshotsEnabled) {
-                continue;
-            }
-            createDueSnapshot(*route, plan, *destination, stateStore);
+            createArchive(plan, stateStore, largeFileThresholdBytes);
+            stateStore.completeRouteSuccess(plan.sourceId, plan.destinationId, utcNow());
             ++summary.succeeded;
         } catch (const std::exception& error) {
-            const std::string message = "Snapshot failed for " + pathToUtf8(plan.source) + ": " + error.what();
-            stateStore.appendActivity(utcNow(), "error", message, plan.sourceId, plan.destinationId);
+            const std::string message = "Zipped backup failed for " + pathToUtf8(plan.source) + ": " + error.what();
+            stateStore.completeRouteFailure(plan.sourceId, plan.destinationId, message);
+            stateStore.appendActivity(attemptTime, "error", message, plan.sourceId, plan.destinationId);
             summary.messages.push_back(message);
             ++summary.failed;
         }
@@ -583,26 +575,27 @@ BackupRunSummary BackupEngine::runSnapshots(const BackupConfig& config, const st
     return summary;
 }
 
-void BackupEngine::createDueSnapshot(const BackupRoute& route, const MirrorPlan& plan,
-                                     const Destination& destination, StateStore& stateStore) const {
-    if (!isSnapshotDue(stateStore.latestSnapshotUtc(plan.sourceId, plan.destinationId),
-                       route.snapshotPolicy.intervalHours)) {
-        return;
+void BackupEngine::createArchive(const BackupPlan& plan, StateStore& stateStore,
+                                 std::uint64_t largeFileThresholdBytes) const {
+    std::filesystem::create_directories(plan.destination);
+    std::filesystem::path archivePath =
+        plan.destination / (plan.source.filename().wstring() + L"_" +
+                            std::filesystem::path{utcFilenameStamp()}.wstring() + L".zip");
+    if (std::filesystem::exists(archivePath)) {
+        archivePath = plan.destination /
+                      (plan.source.filename().wstring() + L"_" +
+                       std::filesystem::path{utcFilenameStamp()}.wstring() + L"_" +
+                       std::filesystem::path{generateUuid()}.wstring() + L".zip");
     }
-    const std::filesystem::path snapshotFolder = destinationRoot(destination) / L"BackItUpTool" / L"Snapshots" /
-                                                 buildMirrorRelativePath(plan.source).parent_path();
-    std::filesystem::create_directories(snapshotFolder);
-    const std::filesystem::path archivePath = snapshotFolder /
-                                              (plan.source.filename().wstring() + L"_" +
-                                               std::filesystem::path{utcFilenameStamp()}.wstring() + L".zip");
     if (plan.isProjectsSource) {
-        runProjectTarZip(ProjectsSource{plan.sourceId, plan.source}, archivePath);
+        runProjectTarZip(ProjectsSource{plan.sourceId, plan.source}, archivePath,
+                         projectMaximumFileSize(plan, stateStore, largeFileThresholdBytes));
     } else {
         runTarZip(plan.source, archivePath);
     }
-    stateStore.recordSnapshot(plan.sourceId, plan.destinationId, utcNow(), archivePath,
-                              std::filesystem::file_size(archivePath));
-    pruneSnapshots(route, plan.sourceId, plan.destinationId, stateStore);
-    stateStore.appendActivity(utcNow(), "info", "Snapshot created at " + pathToUtf8(archivePath) + ".",
+    stateStore.recordArchive(plan.sourceId, plan.destinationId, utcNow(), archivePath,
+                             std::filesystem::file_size(archivePath));
+    pruneArchives(plan.sourceId, plan.destinationId, stateStore);
+    stateStore.appendActivity(utcNow(), "info", "Zipped backup created at " + pathToUtf8(archivePath) + ".",
                               plan.sourceId, plan.destinationId);
 }

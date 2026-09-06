@@ -5,16 +5,16 @@ A lightweight Windows tray application for configuring and running personal file
 ## Included
 
 - Resizable dark-only FLTK window with flat controls and an icon sidebar for Backup status, Sources, Projects, Destinations, Activity, and Settings.
-- Working Manual Sources page with search, bulk removal, and native Windows pickers that can add many files or many folders at once.
-- Working Destinations page that detects connected removable drives, tracks them by volume serial number, shows availability and free space, and also accepts folder destinations.
+- Working Manual Sources page with search, bulk removal, native Windows pickers, and a required Mirror or Zipped choice when Sources are added.
+- Working Destinations page that detects removable-drive arrival and removal through Windows device notifications, tracks drives by volume serial number, shows availability and free space, and also accepts folder destinations. USB detection does not poll.
 - Every Manual Source and Projects Root is backed up automatically to every folder and USB Destination configured on the Destinations page.
-- `Run now` performs configured Mirrors sequentially in the background. Mirrors preserve their original path under `<destination>\BackItUpTool\Mirrors`, such as `C\Users\name\Documents`, and reject any Source/Destination overlap.
+- `Run now` immediately processes pending changed Sources and opted-in Projects for every currently available Destination, including folder destinations when no USB drive is connected. It does not create another ZIP when nothing changed. Mirrors preserve their original path under `<destination>\BackItUpTool\Mirrors`, such as `C\Users\name\Documents`, and reject any Source/Destination overlap.
 - Manual Sources are watched automatically. Changes are debounced, saved as pending work in SQLite, mirrored when the Destination is available, and remain queued across app restarts or removable-drive disconnections.
-- Project Roots can be added from the Projects page. Folders at any depth opt in with `.backup-watch`; the app gives empty markers a stable UUID and uses recursive `ReadDirectoryChangesW` notifications to discover changes without polling.
+- Project Roots can be added from the Projects page with a required Mirror or Zipped choice. Folders at any depth opt in with `.backup-watch`; the app gives empty markers a stable UUID and uses recursive `ReadDirectoryChangesW` notifications to discover changes without polling.
 - Project backups exclude `.git` repositories, `build`, `node_modules`, junctions, `.backup-watch`, `.backup-ignore`, and paths matched by `.backup-ignore`. Hidden loose files remain included.
-- The first time a Project exceeds the large-file or total-size limit, an always-on-top approval window asks whether to always allow or permanently ignore that specific folder. The stored decision prevents repeated prompts.
-- Each changed Source also receives a ZIP Snapshot after its Mirror succeeds. Snapshots are stored below `<destination>\BackItUpTool\Snapshots` using the original readable path, then kept daily for 30 days and monthly for 12 months by default.
-- The Backup status page shows Destination availability, pending Mirrors, the most recent successful Mirror and Snapshot, automatic-watching status, and recent failures.
+- The first time a Project contains a file above the configured limit, an always-on-top approval window asks whether to always include large files or permanently ignore those large files. The Project itself remains watched and backed up, and the stored decision prevents repeated prompts for that Project.
+- Mirror and Zipped are mutually exclusive per Source or Projects Root. Zipped backups read directly from the source, use ZIP compression level 9, are stored below `<destination>\BackItUpTool\Zipped`, and retain daily and monthly history.
+- The Backup status page shows Destination availability, pending backups, the most recent successful backup and Zipped backup, automatic-watching status, and recent failures.
 - The Activity page shows recent backup work and errors. Settings can change the watcher settle delay and large-Project warning limits without editing `config.json` by hand.
 - The always-visible status bar provides `Run now` and Pause for 1, 3, or 5 hours. Routine success stays quiet; failures and unavailable Destinations remain visible.
 - Tray icon with left-click Open and right-click Open/Exit actions.

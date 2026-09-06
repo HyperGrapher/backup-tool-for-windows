@@ -48,8 +48,10 @@ Fl_Box* addStatusRow(int x, int y, int width, const char* title) {
 }  // namespace
 
 OverviewPanel::OverviewPanel(int x, int y, int width, int height, const BackupConfig& config,
+                             const std::vector<ConfiguredProjectsSource>& projectsSources,
                              const StateStore& stateStore)
-    : Fl_Group(x, y, width, height), config_(config), stateStore_(stateStore) {
+    : Fl_Group(x, y, width, height), config_(config), projectsSources_(projectsSources),
+      stateStore_(stateStore) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
@@ -64,8 +66,8 @@ OverviewPanel::OverviewPanel(int x, int y, int width, int height, const BackupCo
     destinationHealth_ = addStatusRow(rowX, y + 68, rowWidth, "Destinations");
     pendingRoutes_ = addStatusRow(rowX, y + 102, rowWidth, "Pending changes");
     watcherStatus_ = addStatusRow(rowX, y + 136, rowWidth, "Watching");
-    lastMirror_ = addStatusRow(rowX, y + 170, rowWidth, "Last successful Mirror");
-    lastSnapshot_ = addStatusRow(rowX, y + 204, rowWidth, "Last Snapshot");
+    lastBackup_ = addStatusRow(rowX, y + 170, rowWidth, "Last successful backup");
+    lastArchive_ = addStatusRow(rowX, y + 204, rowWidth, "Last Zipped backup");
 
     addLabel(x + 16, y + 252, width - 32, 24, "Failures requiring attention", 13, UiTheme::kText,
              UiTheme::kUiFontSemibold);
@@ -108,10 +110,9 @@ void OverviewPanel::refresh() {
                                        : UiTheme::kError);
 
     const std::vector<RouteRuntimeState> states = stateStore_.routeStates();
-    const ConfiguredProjectsDiscovery projects = discoverConfiguredProjects(config_.projectsRoots);
     const auto pendingCount = std::ranges::count_if(states, [&](const RouteRuntimeState& state) {
         return state.isDirty && std::ranges::any_of(config_.routes, [&](const BackupRoute& route) {
-            if (route.destinationId != state.destinationId || !route.isMirrorEnabled) {
+            if (route.destinationId != state.destinationId) {
                 return false;
             }
             if (route.sourceId == state.sourceId) {
@@ -119,7 +120,7 @@ void OverviewPanel::refresh() {
                     return source.id == state.sourceId;
                 });
             }
-            return std::ranges::any_of(projects.sources, [&](const ConfiguredProjectsSource& source) {
+            return std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
                 return source.rootId == route.sourceId && source.source.id == state.sourceId;
             });
         });
@@ -135,13 +136,13 @@ void OverviewPanel::refresh() {
             latestSuccess = state.lastSuccessUtc;
         }
     }
-    lastMirror_->copy_label(latestSuccess.has_value() ? latestSuccess->c_str() : "Not run yet");
-    lastMirror_->labelfont(UiTheme::kMonoFont);
-    const std::optional<std::string> latestSnapshot = stateStore_.latestSnapshotUtc();
-    lastSnapshot_->copy_label(latestSnapshot.has_value() ? latestSnapshot->c_str() : "Not created yet");
-    lastSnapshot_->labelfont(UiTheme::kMonoFont);
+    lastBackup_->copy_label(latestSuccess.has_value() ? latestSuccess->c_str() : "Not run yet");
+    lastBackup_->labelfont(UiTheme::kMonoFont);
+    const std::optional<std::string> latestArchive = stateStore_.latestArchiveUtc();
+    lastArchive_->copy_label(latestArchive.has_value() ? latestArchive->c_str() : "Not created yet");
+    lastArchive_->labelfont(UiTheme::kMonoFont);
 
-    const std::size_t watchedSourceCount = config_.manualSources.size() + projects.sources.size();
+    const std::size_t watchedSourceCount = config_.manualSources.size() + projectsSources_.size();
     const std::string watcherText = std::to_string(watchedSourceCount) + " Sources configured";
     watcherStatus_->copy_label(watcherText.c_str());
     watcherStatus_->labelcolor(UiTheme::kSafe);

@@ -25,7 +25,6 @@ private:
     std::function<void()> configChangedCallback_;
     Fl_Int_Input* debounceInput_{};
     Fl_Int_Input* largeFileInput_{};
-    Fl_Int_Input* projectSizeInput_{};
     Fl_Button* saveButton_{};
     Fl_Box* resultSummary_{};
 

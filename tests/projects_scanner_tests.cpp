@@ -96,14 +96,12 @@ TEST_CASE("project preflight excludes repositories generated trees tool metadata
     const ProjectsSource source{"01234567-89ab-4def-8123-456789abcdef", directory.path() / "Project"};
     BackupSettings settings;
     settings.largeFileThresholdBytes = 50;
-    settings.projectSizeThresholdBytes = 150;
 
     const ProjectPreflight preflight = scanProject(source, settings);
 
     REQUIRE(preflight.eligibleFileCount == 2);
     REQUIRE(preflight.eligibleSizeBytes == 160);
     REQUIRE(preflight.largeFiles.size() == 2);
-    REQUIRE(preflight.doesProjectExceedThreshold);
     REQUIRE(preflight.requiresApproval());
 }
 
@@ -143,6 +141,19 @@ TEST_CASE("project contents use the same exclusions as the size check") {
     REQUIRE(std::ranges::any_of(contents.files, [](const EligibleProjectFile& file) {
         return file.relativePath == std::filesystem::path{"hidden"} / ".env";
     }));
+}
+
+TEST_CASE("project contents can permanently exclude files above the approval threshold") {
+    TemporaryDirectory directory;
+    directory.write("Project/.backup-watch", "01234567-89ab-4def-8123-456789abcdef");
+    directory.write("Project/small.txt", "small");
+    directory.write("Project/large.bin", std::string(20, 'x'));
+
+    const ProjectContents contents = collectProjectContents(
+        ProjectsSource{"01234567-89ab-4def-8123-456789abcdef", directory.path() / "Project"}, 10);
+
+    REQUIRE(contents.files.size() == 1);
+    REQUIRE(contents.files.front().relativePath == "small.txt");
 }
 
 TEST_CASE("configured Projects Roots discover child projects with their parent Root IDs") {

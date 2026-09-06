@@ -230,7 +230,7 @@ bool ProjectChangeFilter::operator()(const std::filesystem::path& relativePath) 
 }
 
 bool ProjectPreflight::requiresApproval() const noexcept {
-    return !largeFiles.empty() || doesProjectExceedThreshold;
+    return !largeFiles.empty();
 }
 
 ProjectsDiscovery discoverProjects(const ProjectsRoot& root) {
@@ -324,7 +324,8 @@ bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath) {
     return filename == L".backup-watch" || filename == L".git";
 }
 
-ProjectContents collectProjectContents(const ProjectsSource& source) {
+ProjectContents collectProjectContents(const ProjectsSource& source,
+                                       std::optional<std::uint64_t> maximumFileSizeBytes) {
     if (source.id.empty() || source.path.empty()) {
         throw std::invalid_argument("Projects Source must have an ID and path.");
     }
@@ -373,6 +374,9 @@ ProjectContents collectProjectContents(const ProjectsSource& source) {
         if (typeError) {
             throw std::runtime_error("Unable to read the size of an Eligible Item.");
         }
+        if (maximumFileSizeBytes.has_value() && rawSize > *maximumFileSizeBytes) {
+            continue;
+        }
         contents.files.push_back(EligibleProjectFile{relativePath, static_cast<std::uint64_t>(rawSize)});
     }
     if (iterationError) {
@@ -385,8 +389,8 @@ ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings&
     if (source.id.empty() || source.path.empty()) {
         throw std::invalid_argument("Projects Source must have an ID and path.");
     }
-    if (settings.largeFileThresholdBytes == 0 || settings.projectSizeThresholdBytes == 0) {
-        throw std::invalid_argument("Project size thresholds must be positive.");
+    if (settings.largeFileThresholdBytes == 0) {
+        throw std::invalid_argument("The large file threshold must be positive.");
     }
     const ProjectContents contents = collectProjectContents(source);
     ProjectPreflight preflight;
@@ -406,6 +410,5 @@ ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings&
             preflight.largeFiles.push_back({file.relativePath, size});
         }
     }
-    preflight.doesProjectExceedThreshold = preflight.eligibleSizeBytes > settings.projectSizeThresholdBytes;
     return preflight;
 }

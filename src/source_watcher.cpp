@@ -17,8 +17,6 @@ namespace {
 constexpr DWORD kChangeFilter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME |
                                 FILE_NOTIFY_CHANGE_SIZE | FILE_NOTIFY_CHANGE_LAST_WRITE |
                                 FILE_NOTIFY_CHANGE_CREATION;
-constexpr auto kRetryDelay = std::chrono::seconds{5};
-
 [[nodiscard]] std::wstring lowercase(std::wstring text) {
     std::transform(text.begin(), text.end(), text.begin(), [](wchar_t character) {
         return static_cast<wchar_t>(std::towlower(character));
@@ -37,7 +35,6 @@ struct SourceWatcher::Registration {
     OVERLAPPED overlapped{};
     std::array<std::byte, 64 * 1024> buffer{};
     std::optional<std::chrono::steady_clock::time_point> lastChange;
-    std::chrono::steady_clock::time_point nextOpenAttempt{};
 };
 
 SourceWatcher::SourceWatcher() = default;
@@ -96,11 +93,8 @@ void SourceWatcher::start(const std::vector<SourceWatchTarget>& targets, int deb
 
     isRunning_ = true;
     for (const std::unique_ptr<Registration>& registration : registrations_) {
-        if (!openRegistration(*registration)) {
-            registration->nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
-        } else if (!issueRead(*registration)) {
+        if (openRegistration(*registration) && !issueRead(*registration)) {
             closeRegistration(*registration);
-            registration->nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
         }
     }
     thread_ = std::thread([this] { watchLoop(); });
@@ -145,7 +139,6 @@ void SourceWatcher::watchLoop() {
             auto& registration = *reinterpret_cast<Registration*>(completionKey);
             if (completed == FALSE) {
                 closeRegistration(registration);
-                registration.nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
                 continue;
             }
             bool isRelevant = transferredBytes == 0;
@@ -169,21 +162,11 @@ void SourceWatcher::watchLoop() {
             }
             if (!issueRead(registration)) {
                 closeRegistration(registration);
-                registration.nextOpenAttempt = std::chrono::steady_clock::now() + kRetryDelay;
             }
         }
 
         const auto now = std::chrono::steady_clock::now();
         for (const std::unique_ptr<Registration>& registration : registrations_) {
-            if (registration->handle == INVALID_HANDLE_VALUE && now >= registration->nextOpenAttempt) {
-                registration->nextOpenAttempt = now + kRetryDelay;
-                if (openRegistration(*registration) && issueRead(*registration)) {
-                    registration->lastChange = now;
-                } else {
-                    closeRegistration(*registration);
-                }
-                continue;
-            }
             if (!registration->lastChange.has_value() || now - *registration->lastChange < debounce_) {
                 continue;
             }

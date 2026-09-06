@@ -11,7 +11,7 @@ class StateStore;
 
 [[nodiscard]] std::filesystem::path buildMirrorRelativePath(const std::filesystem::path& sourcePath);
 
-struct MirrorPlan {
+struct BackupPlan {
     std::string routeSourceId;
     std::string sourceId;
     std::string destinationId;
@@ -36,24 +36,30 @@ struct SizeWarning {
 
 class BackupEngine final {
 public:
-    [[nodiscard]] std::vector<MirrorPlan> previewMirrors(
+    [[nodiscard]] std::vector<BackupPlan> previewMirrors(
         const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources) const;
-    [[nodiscard]] std::vector<MirrorPlan> previewPendingMirrors(const BackupConfig& config,
-                                                                const std::vector<ConfiguredProjectsSource>& projectsSources,
-                                                                const StateStore& stateStore) const;
-    [[nodiscard]] std::vector<MirrorPlan> previewDueSnapshots(
+    [[nodiscard]] std::vector<BackupPlan> previewPendingMirrors(
+        const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+        const StateStore& stateStore) const;
+    [[nodiscard]] std::vector<BackupPlan> previewPendingArchives(
         const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
         const StateStore& stateStore) const;
     [[nodiscard]] std::vector<SizeWarning> findSizeWarnings(const BackupConfig& config,
-                                                            const std::vector<MirrorPlan>& plans,
+                                                            const std::vector<BackupPlan>& plans,
                                                             const StateStore& stateStore) const;
-    [[nodiscard]] BackupRunSummary runMirrors(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
-                                              StateStore& stateStore,
-                                              const std::filesystem::path& logDirectory) const;
-    [[nodiscard]] BackupRunSummary runSnapshots(const BackupConfig& config, const std::vector<MirrorPlan>& plans,
-                                                StateStore& stateStore) const;
+    [[nodiscard]] BackupRunSummary runMirrors(const std::vector<BackupPlan>& plans, StateStore& stateStore,
+                                              const std::filesystem::path& logDirectory,
+                                              std::uint64_t largeFileThresholdBytes) const;
+    [[nodiscard]] BackupRunSummary runArchives(const std::vector<BackupPlan>& plans, StateStore& stateStore,
+                                               std::uint64_t largeFileThresholdBytes) const;
 
 private:
-    void createDueSnapshot(const BackupRoute& route, const MirrorPlan& plan, const Destination& destination,
-                           StateStore& stateStore) const;
+    [[nodiscard]] std::vector<BackupPlan> previewBackups(
+        const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+        BackupMode backupMode) const;
+    [[nodiscard]] std::vector<BackupPlan> previewPendingBackups(
+        const BackupConfig& config, const std::vector<ConfiguredProjectsSource>& projectsSources,
+        const StateStore& stateStore, BackupMode backupMode) const;
+    void createArchive(const BackupPlan& plan, StateStore& stateStore,
+                       std::uint64_t largeFileThresholdBytes) const;
 };

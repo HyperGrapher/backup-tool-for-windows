@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -64,7 +65,6 @@ struct ProjectPreflight {
     std::uint64_t eligibleSizeBytes{};
     std::size_t eligibleFileCount{};
     std::vector<LargeEligibleFile> largeFiles;
-    bool doesProjectExceedThreshold{};
     bool isGitRepository{};
 
     [[nodiscard]] bool requiresApproval() const noexcept;
@@ -88,5 +88,6 @@ private:
 [[nodiscard]] ProjectsDiscovery discoverProjects(const ProjectsRoot& root);
 [[nodiscard]] ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<ProjectsRoot>& roots);
 [[nodiscard]] bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath);
-[[nodiscard]] ProjectContents collectProjectContents(const ProjectsSource& source);
+[[nodiscard]] ProjectContents collectProjectContents(
+    const ProjectsSource& source, std::optional<std::uint64_t> maximumFileSizeBytes = std::nullopt);
 [[nodiscard]] ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings);

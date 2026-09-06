@@ -87,7 +87,7 @@ ActivityPanel::ActivityPanel(int x, int y, int width, int height, const BackupCo
 
     addLabel(x + 16, y + 10, width - 32, 28, "Activity", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
     addLabel(x + 16, y + 36, width - 32, 20,
-             "Mirror, Snapshot, and failure history. Newest events appear first.", 11,
+             "Mirror, Zipped backup, and failure history. Newest events appear first.", 11,
              UiTheme::kSecondaryText);
 
     addLabel(x + 20, y + 66, 151, 22, "Time", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);

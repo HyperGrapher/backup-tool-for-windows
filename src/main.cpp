@@ -1,6 +1,8 @@
 #define NOMINMAX
 #include <windows.h>
 #include <commctrl.h>
+#include <dbt.h>
+#include <ntddstor.h>
 #include <shellapi.h>
 #include <shlobj.h>
 
@@ -20,7 +22,6 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -71,8 +72,10 @@ constexpr int kFooterHeight = 26;
 
 class TrayIcon final {
 public:
-    TrayIcon(std::function<void()> openCallback, std::function<void()> exitCallback)
-        : openCallback_(std::move(openCallback)), exitCallback_(std::move(exitCallback)) {}
+    TrayIcon(std::function<void()> openCallback, std::function<void()> exitCallback,
+             std::function<void()> deviceChangedCallback)
+        : openCallback_(std::move(openCallback)), exitCallback_(std::move(exitCallback)),
+          deviceChangedCallback_(std::move(deviceChangedCallback)) {}
 
     ~TrayIcon() {
         remove();
@@ -90,7 +93,9 @@ private:
 
     std::function<void()> openCallback_;
     std::function<void()> exitCallback_;
+    std::function<void()> deviceChangedCallback_;
     HWND window_{};
+    HDEVNOTIFY deviceNotification_{};
     HICON icon_{};
     bool ownsIcon_{};
     bool ownsWindowClass_{};
@@ -353,14 +358,15 @@ public:
     App()
         : dataDirectory_(applicationDataDirectory()), configStore_(dataDirectory_ / L"config.json"),
           stateStore_(dataDirectory_ / L"state.db"), config_(loadOrCreateConfig(configStore_)),
-          tray_([this] { show(); }, [this] { requestExit(); }) {
+          tray_([this] { show(); }, [this] { requestExit(); }, [this] { handleDestinationDevicesChanged(); }) {
         configureLogging(dataDirectory_);
         buildUi();
         if (!tray_.create()) {
             throw std::runtime_error("Unable to create the notification-area icon.");
         }
         restartSourceWatcher();
-        initializeRouteStates(true);
+        stateStore_.recoverInterruptedRoutes();
+        initializeRouteStates();
         updateGlobalStatus();
         Fl::add_timeout(1.0, automaticWorkTimerCallback, this);
         spdlog::info("Application started in the notification area");
@@ -422,11 +428,11 @@ private:
     };
 
     struct BackupPreparation {
-        std::vector<MirrorPlan> mirrorPlans;
-        std::vector<MirrorPlan> snapshotPlans;
+        std::vector<BackupPlan> mirrorPlans;
+        std::vector<BackupPlan> archivePlans;
         std::vector<SizeWarning> sizeWarnings;
         std::optional<std::string> error;
-        bool pendingOnly{};
+        std::uint64_t largeFileThresholdBytes{};
     };
 
     std::filesystem::path dataDirectory_;
@@ -464,6 +470,7 @@ private:
     bool isRunning_{true};
     bool hasPositionedWindow_{};
     bool isProjectsRefreshPending_{};
+    bool isDestinationChangePending_{};
     std::chrono::steady_clock::time_point nextAutomaticAttempt_{};
     std::optional<std::chrono::steady_clock::time_point> pauseUntil_;
 
@@ -500,7 +507,7 @@ private:
     }
 
     static void runNowCallback(Fl_Widget*, void* data) {
-        static_cast<App*>(data)->startMirrorRun();
+        static_cast<App*>(data)->startBackupRun();
     }
 
     static void pauseOneHourCallback(Fl_Widget*, void* data) {
@@ -519,8 +526,8 @@ private:
         static_cast<App*>(data)->resumeAutomaticBackups();
     }
 
-    static void mirrorFinishedAwake(void* data) {
-        static_cast<App*>(data)->finishMirrorRun();
+    static void backupFinishedAwake(void* data) {
+        static_cast<App*>(data)->finishBackupRun();
     }
 
     static void backupPreparedAwake(void* data) {
@@ -639,7 +646,8 @@ private:
         projectsPanel_ = new ProjectsPanel(
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
             [this] { handleConfigChanged(); });
-        overviewPanel_ = new OverviewPanel(panelX, panelY, panelWidth, panelHeight, config_, stateStore_);
+        overviewPanel_ =
+            new OverviewPanel(panelX, panelY, panelWidth, panelHeight, config_, projectsSources_, stateStore_);
         activityPanel_ = new ActivityPanel(panelX, panelY, panelWidth, panelHeight, config_, stateStore_);
         settingsPanel_ = new SettingsPanel(panelX, panelY, panelWidth, panelHeight, config_, configStore_,
                                            [this] { handleConfigChanged(); });
@@ -743,36 +751,29 @@ private:
         overviewPanel_->refresh();
         activityPanel_->refresh();
         settingsPanel_->refresh();
+        nextAutomaticAttempt_ = std::chrono::steady_clock::now();
         updateConfigurationSummary();
         updateGlobalStatus();
     }
 
-    void initializeRouteStates(bool shouldRequeueExistingRoutes = false) {
-        if (shouldRequeueExistingRoutes) {
-            stateStore_.recoverInterruptedRoutes();
-        }
+    void initializeRouteStates() {
         for (const BackupRoute& route : config_.routes) {
-            if (!route.isMirrorEnabled) {
-                continue;
-            }
             const bool isManualSource = std::ranges::any_of(config_.manualSources, [&](const ManualSource& source) {
                 return source.id == route.sourceId;
             });
             if (isManualSource) {
-                if (shouldRequeueExistingRoutes ||
-                    !stateStore_.routeState(route.sourceId, route.destinationId).has_value()) {
+                const std::optional<RouteRuntimeState> state =
+                    stateStore_.routeState(route.sourceId, route.destinationId);
+                if (!state.has_value() || !state->lastSuccessUtc.has_value()) {
                     stateStore_.markRouteDirty(route.sourceId, route.destinationId);
                 }
                 continue;
             }
             for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
-                if (stateStore_.projectBackupDecision(projectsSource.source.id) ==
-                    ProjectBackupDecision::ignorePermanently) {
-                    continue;
-                }
+                const std::optional<RouteRuntimeState> state =
+                    stateStore_.routeState(projectsSource.source.id, route.destinationId);
                 if (projectsSource.rootId == route.sourceId &&
-                    (shouldRequeueExistingRoutes ||
-                     !stateStore_.routeState(projectsSource.source.id, route.destinationId).has_value())) {
+                    (!state.has_value() || !state->lastSuccessUtc.has_value())) {
                     stateStore_.markRouteDirty(projectsSource.source.id, route.destinationId);
                 }
             }
@@ -797,10 +798,6 @@ private:
             watchTargets.push_back(std::move(target));
         }
         for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
-            if (stateStore_.projectBackupDecision(projectsSource.source.id) ==
-                ProjectBackupDecision::ignorePermanently) {
-                continue;
-            }
             SourceWatchTarget target;
             target.sourceId = projectsSource.source.id;
             target.directory = projectsSource.source.path;
@@ -841,9 +838,6 @@ private:
     }
 
     void markSourceDirty(const std::string& sourceId) {
-        if (stateStore_.projectBackupDecision(sourceId) == ProjectBackupDecision::ignorePermanently) {
-            return;
-        }
         std::size_t markedCount = 0;
         for (const BackupRoute& route : config_.routes) {
             bool matchesSource = route.sourceId == sourceId;
@@ -852,18 +846,32 @@ private:
                     return source.source.id == sourceId && source.rootId == route.sourceId;
                 });
             }
-            if (!matchesSource || !route.isMirrorEnabled) {
+            if (!matchesSource) {
                 continue;
             }
             stateStore_.markRouteDirty(sourceId, route.destinationId);
             ++markedCount;
         }
         if (markedCount > 0) {
-            footerStatus_->copy_label("Change detected. Mirror is pending.");
+            footerStatus_->copy_label("Change detected. Backup is pending.");
             overviewPanel_->refresh();
             nextAutomaticAttempt_ = std::chrono::steady_clock::now();
             updateGlobalStatus();
         }
+    }
+
+    void handleDestinationDevicesChanged() {
+        destinationsPanel_->refresh();
+        overviewPanel_->refresh();
+        if (hasPendingBackupWork()) {
+            if (isBackupRunning_) {
+                isDestinationChangePending_ = true;
+            } else {
+                nextAutomaticAttempt_ = std::chrono::steady_clock::now();
+            }
+            footerStatus_->copy_label("Destination device changed. Checking pending backups.");
+        }
+        updateGlobalStatus();
     }
 
     void pauseFor(std::chrono::hours duration) {
@@ -891,45 +899,39 @@ private:
         if (isBackupRunning_ || now < nextAutomaticAttempt_) {
             return;
         }
-        startMirrorRun(true);
+        if (!hasPendingBackupWork()) {
+            nextAutomaticAttempt_ = std::chrono::steady_clock::time_point::max();
+            return;
+        }
+        startBackupRun();
     }
 
-    void startMirrorRun(bool pendingOnly = false) {
+    void startBackupRun() {
         if (isBackupRunning_) {
             return;
         }
         try {
-            if (!pendingOnly) {
-                initializeRouteStates(true);
-            }
             if (backupThread_.joinable()) {
                 backupThread_.join();
             }
             isBackupRunning_ = true;
             runNowButton_->deactivate();
-            updateGlobalStatus();
-            footerStatus_->copy_label("Checking pending backups and snapshots...");
+            footerStatus_->copy_label("Checking pending backups...");
             const BackupConfig configSnapshot = config_;
             const std::vector<ConfiguredProjectsSource> projectsSourcesSnapshot = projectsSources_;
-            backupThread_ = std::thread([this, configSnapshot, projectsSourcesSnapshot, pendingOnly] {
+            backupThread_ = std::thread([this, configSnapshot, projectsSourcesSnapshot] {
                 BackupPreparation preparation;
-                preparation.pendingOnly = pendingOnly;
+                preparation.largeFileThresholdBytes = configSnapshot.settings.largeFileThresholdBytes;
                 try {
-                    preparation.mirrorPlans = pendingOnly
-                                                  ? backupEngine_.previewPendingMirrors(configSnapshot, projectsSourcesSnapshot,
-                                                                                       stateStore_)
-                                                  : backupEngine_.previewMirrors(configSnapshot, projectsSourcesSnapshot);
-                    preparation.snapshotPlans =
-                        backupEngine_.previewDueSnapshots(configSnapshot, projectsSourcesSnapshot, stateStore_);
-                    const auto isPermanentlyIgnored = [this](const MirrorPlan& plan) {
-                        return plan.isProjectsSource &&
-                               stateStore_.projectBackupDecision(plan.sourceId) ==
-                                   ProjectBackupDecision::ignorePermanently;
-                    };
-                    std::erase_if(preparation.mirrorPlans, isPermanentlyIgnored);
-                    std::erase_if(preparation.snapshotPlans, isPermanentlyIgnored);
-                    preparation.sizeWarnings = backupEngine_.findSizeWarnings(configSnapshot, preparation.mirrorPlans,
-                                                                              stateStore_);
+                    preparation.mirrorPlans =
+                        backupEngine_.previewPendingMirrors(configSnapshot, projectsSourcesSnapshot, stateStore_);
+                    preparation.archivePlans =
+                        backupEngine_.previewPendingArchives(configSnapshot, projectsSourcesSnapshot, stateStore_);
+                    std::vector<BackupPlan> plansToCheck = preparation.mirrorPlans;
+                    plansToCheck.insert(plansToCheck.end(), preparation.archivePlans.begin(),
+                                        preparation.archivePlans.end());
+                    preparation.sizeWarnings =
+                        backupEngine_.findSizeWarnings(configSnapshot, plansToCheck, stateStore_);
                 } catch (const std::exception& error) {
                     preparation.error = error.what();
                 }
@@ -963,64 +965,46 @@ private:
             return;
         }
 
-        std::unordered_set<std::string> ignoredSourceIds;
         for (const SizeWarning& warning : preparation.sizeWarnings) {
             const std::vector<SizeWarning> folderWarning{warning};
             SizeApprovalDialog dialog{folderWarning};
             const SizeApprovalResult decision = dialog.show();
             const ProjectBackupDecision storedDecision = decision == SizeApprovalResult::alwaysAllow
                                                              ? ProjectBackupDecision::alwaysAllow
-                                                             : ProjectBackupDecision::ignorePermanently;
+                                                             : ProjectBackupDecision::ignoreLargeFiles;
             stateStore_.setProjectBackupDecision(warning.sourceId, storedDecision, utcNowForApproval());
-            if (storedDecision == ProjectBackupDecision::ignorePermanently) {
-                ignoredSourceIds.insert(warning.sourceId);
-                for (const Destination& destination : config_.destinations) {
-                    stateStore_.clearRoutePending(warning.sourceId, destination.id);
-                }
-            }
         }
-        if (!ignoredSourceIds.empty()) {
-            restartSourceWatcher();
-        }
-        const auto isBlocked = [&](const MirrorPlan& plan) {
-            return ignoredSourceIds.contains(plan.sourceId);
-        };
-        std::erase_if(preparation.mirrorPlans, isBlocked);
-        std::erase_if(preparation.snapshotPlans, isBlocked);
-        if (preparation.mirrorPlans.empty() && preparation.snapshotPlans.empty()) {
+        if (preparation.mirrorPlans.empty() && preparation.archivePlans.empty()) {
             isBackupRunning_ = false;
             runNowButton_->activate();
-            const bool hasPendingWork = std::ranges::any_of(stateStore_.routeStates(), [](const RouteRuntimeState& state) {
-                return state.isDirty;
-            });
-            if (!ignoredSourceIds.empty()) {
-                footerStatus_->copy_label("Large Project folders were ignored permanently.");
-                nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::minutes{1};
-            } else if (preparation.pendingOnly && hasPendingWork) {
+            const bool shouldCheckAgain = consumeDeferredRefreshes();
+            if (hasPendingBackupWork()) {
                 footerStatus_->copy_label("Backup is pending. Waiting for a Source or Destination.");
-                nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::seconds{30};
             } else {
-                footerStatus_->copy_label("No backup work is currently due.");
-                nextAutomaticAttempt_ = std::chrono::steady_clock::now() + std::chrono::minutes{1};
+                footerStatus_->copy_label("No backup work is currently pending.");
             }
+            nextAutomaticAttempt_ = shouldCheckAgain ? std::chrono::steady_clock::now()
+                                                     : std::chrono::steady_clock::time_point::max();
             updateGlobalStatus();
             return;
         }
 
         const std::string status = "Backing up " + std::to_string(preparation.mirrorPlans.size()) +
-                                   " Mirrors and " + std::to_string(preparation.snapshotPlans.size()) + " Snapshots...";
+                                   " Mirrors and " + std::to_string(preparation.archivePlans.size()) +
+                                   " Zipped backups...";
         footerStatus_->copy_label(status.c_str());
-        const BackupConfig configSnapshot = config_;
-        backupThread_ = std::thread([this, configSnapshot, preparation = std::move(preparation)] {
+        updateGlobalStatus();
+        backupThread_ = std::thread([this, preparation = std::move(preparation)] {
             BackupRunSummary result;
             try {
-                result = backupEngine_.runMirrors(configSnapshot, preparation.mirrorPlans, stateStore_,
-                                                  dataDirectory_ / L"logs");
-                BackupRunSummary snapshots = backupEngine_.runSnapshots(configSnapshot, preparation.snapshotPlans, stateStore_);
-                result.succeeded += snapshots.succeeded;
-                result.failed += snapshots.failed;
-                result.messages.insert(result.messages.end(), std::make_move_iterator(snapshots.messages.begin()),
-                                       std::make_move_iterator(snapshots.messages.end()));
+                result = backupEngine_.runMirrors(preparation.mirrorPlans, stateStore_, dataDirectory_ / L"logs",
+                                                  preparation.largeFileThresholdBytes);
+                BackupRunSummary archives = backupEngine_.runArchives(
+                    preparation.archivePlans, stateStore_, preparation.largeFileThresholdBytes);
+                result.succeeded += archives.succeeded;
+                result.failed += archives.failed;
+                result.messages.insert(result.messages.end(), std::make_move_iterator(archives.messages.begin()),
+                                       std::make_move_iterator(archives.messages.end()));
             } catch (const std::exception& error) {
                 result.failed = 1;
                 result.messages.push_back(error.what());
@@ -1029,11 +1013,11 @@ private:
                 const std::scoped_lock lock(backupResultMutex_);
                 backupResult_ = std::move(result);
             }
-            Fl::awake(mirrorFinishedAwake, this);
+            Fl::awake(backupFinishedAwake, this);
         });
     }
 
-    void finishMirrorRun() {
+    void finishBackupRun() {
         if (backupThread_.joinable()) {
             backupThread_.join();
         }
@@ -1045,22 +1029,45 @@ private:
         }
         isBackupRunning_ = false;
         runNowButton_->activate();
-        if (isProjectsRefreshPending_) {
-            isProjectsRefreshPending_ = false;
-            refreshProjectsFromRoots();
-        }
-        const std::string status = "Mirror finished: " + std::to_string(result.succeeded) + " succeeded, " +
+        const bool shouldCheckAgain = consumeDeferredRefreshes();
+        const std::string status = "Backup finished: " + std::to_string(result.succeeded) + " succeeded, " +
                                    std::to_string(result.failed) + " failed.";
         footerStatus_->copy_label(status.c_str());
         overviewPanel_->refresh();
         activityPanel_->refresh();
-        const bool hasPendingWork = std::ranges::any_of(stateStore_.routeStates(), [](const RouteRuntimeState& state) {
-            return state.isDirty;
-        });
-        nextAutomaticAttempt_ = std::chrono::steady_clock::now() +
-                                (hasPendingWork ? std::chrono::seconds{5} : std::chrono::minutes{1});
+        nextAutomaticAttempt_ = shouldCheckAgain ? std::chrono::steady_clock::now()
+                                                 : std::chrono::steady_clock::time_point::max();
         updateGlobalStatus();
         window_->redraw();
+    }
+
+    bool consumeDeferredRefreshes() {
+        bool shouldCheckAgain = std::exchange(isDestinationChangePending_, false);
+        if (std::exchange(isProjectsRefreshPending_, false)) {
+            refreshProjectsFromRoots();
+            shouldCheckAgain = true;
+        }
+        return shouldCheckAgain;
+    }
+
+    [[nodiscard]] bool isConfiguredRouteState(const RouteRuntimeState& state) const {
+        return std::ranges::any_of(config_.routes, [&](const BackupRoute& route) {
+            if (route.destinationId != state.destinationId) {
+                return false;
+            }
+            if (route.sourceId == state.sourceId) {
+                return true;
+            }
+            return std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
+                return source.rootId == route.sourceId && source.source.id == state.sourceId;
+            });
+        });
+    }
+
+    [[nodiscard]] bool hasPendingBackupWork() const {
+        return std::ranges::any_of(stateStore_.routeStates(), [&](const RouteRuntimeState& state) {
+            return state.isDirty && isConfiguredRouteState(state);
+        });
     }
 
     void updateConfigurationSummary() {
@@ -1073,31 +1080,17 @@ private:
         }
         const std::size_t watchedCount = config_.manualSources.size() + projectsSources_.size();
         const std::string summary = std::to_string(watchedCount) + " watched · " +
-                                    std::to_string(config_.destinations.size()) + " destinations · Last Mirror " +
+                                    std::to_string(config_.destinations.size()) + " destinations · Last backup " +
                                     (latestSuccess.has_value() ? *latestSuccess : "not run yet");
         configurationSummary_->copy_label(summary.c_str());
         window_->redraw();
     }
 
     void updateGlobalStatus() {
-        const auto isConfiguredState = [&](const RouteRuntimeState& state) {
-            return std::ranges::any_of(config_.routes, [&](const BackupRoute& route) {
-                if (!route.isMirrorEnabled || route.destinationId != state.destinationId) {
-                    return false;
-                }
-                if (route.sourceId == state.sourceId) {
-                    return true;
-                }
-                return std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
-                    return source.rootId == route.sourceId && source.source.id == state.sourceId;
-                });
-            });
-        };
-
         std::size_t pendingCount = 0;
         bool hasError = false;
         for (const RouteRuntimeState& state : stateStore_.routeStates()) {
-            if (!isConfiguredState(state)) {
+            if (!isConfiguredRouteState(state)) {
                 continue;
             }
             if (state.isDirty) {
@@ -1169,6 +1162,16 @@ bool TrayIcon::create() {
         return false;
     }
 
+    DEV_BROADCAST_DEVICEINTERFACE_W deviceFilter{};
+    deviceFilter.dbcc_size = sizeof(deviceFilter);
+    deviceFilter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+    deviceFilter.dbcc_classguid = GUID_DEVINTERFACE_VOLUME;
+    deviceNotification_ = RegisterDeviceNotificationW(window_, &deviceFilter, DEVICE_NOTIFY_WINDOW_HANDLE);
+    if (deviceNotification_ == nullptr) {
+        remove();
+        return false;
+    }
+
     using LoadIconMetricFunction = HRESULT(WINAPI*)(HINSTANCE, PCWSTR, int, HICON*);
     const auto loadIconMetric = reinterpret_cast<LoadIconMetricFunction>(
         GetProcAddress(GetModuleHandleW(L"comctl32.dll"), "LoadIconMetric"));
@@ -1204,6 +1207,10 @@ bool TrayIcon::create() {
 }
 
 void TrayIcon::remove() {
+    if (deviceNotification_ != nullptr) {
+        UnregisterDeviceNotification(deviceNotification_);
+        deviceNotification_ = nullptr;
+    }
     if (window_ != nullptr) {
         Shell_NotifyIconW(NIM_DELETE, &notification_);
         DestroyWindow(window_);
@@ -1235,7 +1242,16 @@ LRESULT CALLBACK TrayIcon::windowProcedure(HWND window, UINT message, WPARAM wor
 }
 
 LRESULT TrayIcon::handleMessage(HWND window, UINT message, WPARAM wordParameter, LPARAM longParameter) {
-    static_cast<void>(wordParameter);
+    if (message == WM_DEVICECHANGE &&
+        (wordParameter == DBT_DEVICEARRIVAL || wordParameter == DBT_DEVICEREMOVECOMPLETE ||
+         wordParameter == DBT_DEVNODES_CHANGED)) {
+        if (longParameter == 0 || wordParameter == DBT_DEVNODES_CHANGED ||
+            reinterpret_cast<const DEV_BROADCAST_HDR*>(longParameter)->dbch_devicetype == DBT_DEVTYP_VOLUME ||
+            reinterpret_cast<const DEV_BROADCAST_HDR*>(longParameter)->dbch_devicetype == DBT_DEVTYP_DEVICEINTERFACE) {
+            deviceChangedCallback_();
+        }
+        return 0;
+    }
     if (message == kShowApplicationMessage) {
         openCallback_();
         return 0;

@@ -2,7 +2,6 @@
 
 #include <cstdint>
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,4 +17,3 @@ struct ConnectedVolume {
 };
 
 [[nodiscard]] std::vector<ConnectedVolume> findConnectedRemovableVolumes();
-[[nodiscard]] std::optional<ConnectedVolume> findConnectedRemovableVolume(std::uint32_t serial);

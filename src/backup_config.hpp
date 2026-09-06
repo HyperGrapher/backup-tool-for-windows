@@ -16,10 +16,16 @@ enum class DestinationKind {
     removable,
 };
 
+enum class BackupMode {
+    mirror,
+    zipped,
+};
+
 struct ManualSource {
     std::string id;
     std::filesystem::path path;
     ManualSourceKind kind{ManualSourceKind::folder};
+    BackupMode backupMode{BackupMode::mirror};
 
     bool operator==(const ManualSource&) const = default;
 };
@@ -27,6 +33,7 @@ struct ManualSource {
 struct ProjectsRoot {
     std::string id;
     std::filesystem::path path;
+    BackupMode backupMode{BackupMode::mirror};
 
     bool operator==(const ProjectsRoot&) const = default;
 };
@@ -42,20 +49,9 @@ struct Destination {
     bool operator==(const Destination&) const = default;
 };
 
-struct SnapshotPolicy {
-    int intervalHours{24};
-    int retainDaily{30};
-    int retainMonthly{12};
-
-    bool operator==(const SnapshotPolicy&) const = default;
-};
-
 struct BackupRoute {
     std::string sourceId;
     std::string destinationId;
-    bool isMirrorEnabled{true};
-    bool areSnapshotsEnabled{true};
-    SnapshotPolicy snapshotPolicy;
 
     bool operator==(const BackupRoute&) const = default;
 };
@@ -63,13 +59,12 @@ struct BackupRoute {
 struct BackupSettings {
     int debounceSeconds{8};
     std::uint64_t largeFileThresholdBytes{50ULL * 1024ULL * 1024ULL};
-    std::uint64_t projectSizeThresholdBytes{150ULL * 1024ULL * 1024ULL};
 
     bool operator==(const BackupSettings&) const = default;
 };
 
 struct BackupConfig {
-    int schemaVersion{1};
+    int schemaVersion{2};
     std::vector<ManualSource> manualSources;
     std::vector<ProjectsRoot> projectsRoots;
     std::vector<Destination> destinations;

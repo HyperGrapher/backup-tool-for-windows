@@ -75,6 +75,7 @@ target_link_libraries(BackItUpTool PRIVATE
     user32
     gdi32
     ole32
+    uuid
 )
 
 if(MSVC)

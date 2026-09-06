@@ -25,7 +25,7 @@
 
 namespace {
 
-constexpr int kSourceColumnWidths[] = {128, 70, 480, 100, 0};
+constexpr int kSourceColumnWidths[] = {128, 70, 90, 390, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -84,7 +84,7 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     bool hasRoute = false;
     UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
     for (const BackupRoute& route : config.routes) {
-        if (route.sourceId != source.id || !route.isMirrorEnabled) {
+        if (route.sourceId != source.id) {
             continue;
         }
         hasRoute = true;
@@ -140,7 +140,8 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
 
     addLabel(x + 20, y + 90, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
     addLabel(x + 148, y + 90, 66, 22, "Type", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 218, y + 90, 470, 22, "Path", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 218, y + 90, 86, 22, "Backup", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
+    addLabel(x + 308, y + 90, 380, 22, "Path", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
     addLabel(x + 698, y + 90, 100, 22, "Destinations", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
 
@@ -173,13 +174,16 @@ void SourcesPanel::refresh() {
         const ManualSource& source = config_.manualSources[index];
         const std::string pathText = pathToUtf8(source.path);
         const std::string typeText = source.kind == ManualSourceKind::file ? "File" : "Folder";
+        const std::string modeText = source.backupMode == BackupMode::mirror ? "Mirror" : "Zipped";
         if (!filter.empty() && lowercaseAscii(pathText).find(filter) == std::string::npos &&
-            lowercaseAscii(typeText).find(filter) == std::string::npos) {
+            lowercaseAscii(typeText).find(filter) == std::string::npos &&
+            lowercaseAscii(modeText).find(filter) == std::string::npos) {
             continue;
         }
 
         const std::string line = std::string{UiTheme::statusText(sourceStatus(source, config_, stateStore_))} + '\t' +
-                                 typeText + '\t' + pathText + '\t' + std::to_string(config_.destinations.size());
+                                 typeText + '\t' + modeText + '\t' + pathText + '\t' +
+                                 std::to_string(config_.destinations.size());
         sourceBrowser_->add(line.c_str());
         visibleSourceIndexes_.push_back(index);
     }
@@ -232,6 +236,14 @@ void SourcesPanel::addSources(const std::vector<std::filesystem::path>& paths, M
         return;
     }
 
+    const int modeChoice = fl_choice(
+        "How should these Sources be backed up?\n\nMirror keeps an uncompressed folder copy.\nZipped creates a best-compression ZIP archive.",
+        "Cancel", "Mirror", "Zipped");
+    if (modeChoice == 0) {
+        return;
+    }
+    const BackupMode backupMode = modeChoice == 1 ? BackupMode::mirror : BackupMode::zipped;
+
     BackupConfig updatedConfig = config_;
     std::unordered_set<std::wstring> knownPaths;
     for (const ManualSource& source : updatedConfig.manualSources) {
@@ -244,7 +256,8 @@ void SourcesPanel::addSources(const std::vector<std::filesystem::path>& paths, M
         if (!knownPaths.insert(normalizedPathKey(normalizedPath)).second) {
             continue;
         }
-        updatedConfig.manualSources.push_back(ManualSource{generateStableId("source"), normalizedPath, kind});
+        updatedConfig.manualSources.push_back(
+            ManualSource{generateStableId("source"), normalizedPath, kind, backupMode});
         ++addedCount;
     }
     if (addedCount == 0) {

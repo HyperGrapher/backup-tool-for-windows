@@ -60,7 +60,8 @@ SizeApprovalResult SizeApprovalDialog::show() {
     window.begin();
     addLabel(24, 18, 670, 30, "Large backup items need your approval", 18, UiTheme::kText,
              UiTheme::kUiFontSemibold);
-    addLabel(24, 52, 670, 42, "The backup is paused until you choose an option below.", 12,
+    addLabel(24, 52, 670, 42,
+             "Ignore permanently skips the listed large files. Always allow includes them in every backup.", 12,
              UiTheme::kSecondaryText);
 
     auto* browser = new Fl_Browser(24, 102, 672, 235);
@@ -76,8 +77,7 @@ SizeApprovalResult SizeApprovalDialog::show() {
             browser->add(("  Large file: " + largeFile.relativePath.string() + " (" +
                           formatMiB(largeFile.sizeBytes) + ")").c_str());
         }
-        browser->add(("  Eligible project total: " + formatMiB(warning.eligibleSizeBytes) +
-                      " (limit 150.0 MiB)").c_str());
+        browser->add(("  Eligible project total: " + formatMiB(warning.eligibleSizeBytes)).c_str());
     }
 
     auto* ignoreButton = new Fl_Button(24, 355, 324, 42, "Ignore permanently");

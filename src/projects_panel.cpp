@@ -23,7 +23,7 @@
 
 namespace {
 
-constexpr int kRootColumnWidths[] = {128, 470, 90, 100, 0};
+constexpr int kRootColumnWidths[] = {128, 90, 380, 90, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -59,7 +59,7 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     bool hasRoute = false;
     UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
     for (const BackupRoute& route : config.routes) {
-        if (route.sourceId != root.id || !route.isMirrorEnabled) {
+        if (route.sourceId != root.id) {
             continue;
         }
         hasRoute = true;
@@ -106,7 +106,9 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     removeButton_->callback(removeCallback, this);
 
     addLabel(x + 20, y + 108, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 148, y + 108, 460, 22, "Root folder", 11, UiTheme::kSecondaryText,
+    addLabel(x + 148, y + 108, 86, 22, "Backup", 11, UiTheme::kSecondaryText,
+             UiTheme::kUiFontSemibold);
+    addLabel(x + 238, y + 108, 370, 22, "Root folder", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
     addLabel(x + 618, y + 108, 86, 22, "Projects", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
@@ -136,8 +138,10 @@ void ProjectsPanel::refresh() {
         const auto optedIn = std::ranges::count_if(discovery_.sources, [&](const ConfiguredProjectsSource& source) {
             return source.rootId == root.id;
         });
+        const std::string modeText = root.backupMode == BackupMode::mirror ? "Mirror" : "Zipped";
         const std::string line = std::string{UiTheme::statusText(rootStatus(root, discovery_, config_, stateStore_))} +
-                                 '\t' + pathToUtf8(root.path) + '\t' + std::to_string(optedIn) + '\t' +
+                                 '\t' + modeText + '\t' + pathToUtf8(root.path) + '\t' +
+                                 std::to_string(optedIn) + '\t' +
                                  std::to_string(config_.destinations.size());
         rootBrowser_->add(line.c_str());
     }
@@ -158,11 +162,19 @@ void ProjectsPanel::addRoots() {
         if (paths.empty()) {
             return;
         }
+        const int modeChoice = fl_choice(
+            "How should Projects under these Roots be backed up?\n\nMirror keeps uncompressed folder copies.\nZipped creates best-compression ZIP archives.",
+            "Cancel", "Mirror", "Zipped");
+        if (modeChoice == 0) {
+            return;
+        }
+        const BackupMode backupMode = modeChoice == 1 ? BackupMode::mirror : BackupMode::zipped;
         BackupConfig updated = config_;
         for (const std::filesystem::path& path : paths) {
             const auto normalized = std::filesystem::absolute(path).lexically_normal();
             if (!std::ranges::any_of(updated.projectsRoots, [&](const ProjectsRoot& root) { return root.path == normalized; })) {
-                updated.projectsRoots.push_back(ProjectsRoot{generateStableId("projects-root"), normalized});
+                updated.projectsRoots.push_back(
+                    ProjectsRoot{generateStableId("projects-root"), normalized, backupMode});
             }
         }
         configStore_.save(updated);

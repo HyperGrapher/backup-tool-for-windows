@@ -165,7 +165,7 @@ StateStore::StateStore(const std::filesystem::path& path) {
         ");");
     execute("CREATE INDEX IF NOT EXISTS activity_history_recent ON activity_history(id DESC);");
     execute(
-        "CREATE TABLE IF NOT EXISTS snapshot_history ("
+        "CREATE TABLE IF NOT EXISTS archive_history ("
         "id INTEGER PRIMARY KEY AUTOINCREMENT,"
         "source_id TEXT NOT NULL,"
         "destination_id TEXT NOT NULL,"
@@ -173,9 +173,8 @@ StateStore::StateStore(const std::filesystem::path& path) {
         "archive_path TEXT NOT NULL,"
         "archive_bytes INTEGER NOT NULL"
         ");");
-    execute("CREATE INDEX IF NOT EXISTS snapshot_history_route_recent "
-            "ON snapshot_history(source_id, destination_id, created_utc DESC);");
-    execute("DROP TABLE IF EXISTS project_size_approval;");
+    execute("CREATE INDEX IF NOT EXISTS archive_history_route_recent "
+            "ON archive_history(source_id, destination_id, created_utc DESC);");
     execute(
         "CREATE TABLE IF NOT EXISTS project_backup_decision ("
         "project_id TEXT PRIMARY KEY,"
@@ -337,12 +336,12 @@ void StateStore::completeRouteFailure(std::string_view sourceId, std::string_vie
     }
 }
 
-std::optional<std::string> StateStore::latestSnapshotUtc(std::string_view sourceId,
-                                                          std::string_view destinationId) const {
+std::optional<std::string> StateStore::latestArchiveUtc(std::string_view sourceId,
+                                                        std::string_view destinationId) const {
     requireIdentifier(sourceId, "Source ID");
     requireIdentifier(destinationId, "Destination ID");
     auto statement = prepare(database_.get(),
-                             "SELECT created_utc FROM snapshot_history WHERE source_id = ?1 AND destination_id = ?2 "
+                             "SELECT created_utc FROM archive_history WHERE source_id = ?1 AND destination_id = ?2 "
                              "ORDER BY created_utc DESC LIMIT 1;");
     bindText(database_.get(), statement.get(), 1, sourceId);
     bindText(database_.get(), statement.get(), 2, destinationId);
@@ -356,8 +355,8 @@ std::optional<std::string> StateStore::latestSnapshotUtc(std::string_view source
     return requiredColumnText(statement.get(), 0);
 }
 
-std::optional<std::string> StateStore::latestSnapshotUtc() const {
-    auto statement = prepare(database_.get(), "SELECT created_utc FROM snapshot_history ORDER BY created_utc DESC LIMIT 1;");
+std::optional<std::string> StateStore::latestArchiveUtc() const {
+    auto statement = prepare(database_.get(), "SELECT created_utc FROM archive_history ORDER BY created_utc DESC LIMIT 1;");
     const int result = sqlite3_step(statement.get());
     if (result == SQLITE_DONE) {
         return std::nullopt;
@@ -368,19 +367,19 @@ std::optional<std::string> StateStore::latestSnapshotUtc() const {
     return requiredColumnText(statement.get(), 0);
 }
 
-std::vector<SnapshotRecord> StateStore::snapshotRecords(std::string_view sourceId,
-                                                         std::string_view destinationId) const {
+std::vector<ArchiveRecord> StateStore::archiveRecords(std::string_view sourceId,
+                                                       std::string_view destinationId) const {
     requireIdentifier(sourceId, "Source ID");
     requireIdentifier(destinationId, "Destination ID");
     auto statement = prepare(database_.get(),
                              "SELECT id, source_id, destination_id, created_utc, archive_path, archive_bytes "
-                             "FROM snapshot_history WHERE source_id = ?1 AND destination_id = ?2 "
+                             "FROM archive_history WHERE source_id = ?1 AND destination_id = ?2 "
                              "ORDER BY created_utc DESC;");
     bindText(database_.get(), statement.get(), 1, sourceId);
     bindText(database_.get(), statement.get(), 2, destinationId);
-    std::vector<SnapshotRecord> records;
+    std::vector<ArchiveRecord> records;
     while (sqlite3_step(statement.get()) == SQLITE_ROW) {
-        records.push_back(SnapshotRecord{sqlite3_column_int64(statement.get(), 0), requiredColumnText(statement.get(), 1),
+        records.push_back(ArchiveRecord{sqlite3_column_int64(statement.get(), 0), requiredColumnText(statement.get(), 1),
                                          requiredColumnText(statement.get(), 2), requiredColumnText(statement.get(), 3),
                                          pathFromUtf8(requiredColumnText(statement.get(), 4)),
                                          static_cast<std::uintmax_t>(sqlite3_column_int64(statement.get(), 5))});
@@ -388,13 +387,13 @@ std::vector<SnapshotRecord> StateStore::snapshotRecords(std::string_view sourceI
     return records;
 }
 
-void StateStore::recordSnapshot(std::string_view sourceId, std::string_view destinationId, std::string_view createdUtc,
-                                const std::filesystem::path& archivePath, std::uintmax_t archiveBytes) {
+void StateStore::recordArchive(std::string_view sourceId, std::string_view destinationId, std::string_view createdUtc,
+                               const std::filesystem::path& archivePath, std::uintmax_t archiveBytes) {
     requireIdentifier(sourceId, "Source ID");
     requireIdentifier(destinationId, "Destination ID");
-    requireIdentifier(createdUtc, "Snapshot timestamp");
+    requireIdentifier(createdUtc, "Archive timestamp");
     auto statement = prepare(database_.get(),
-                             "INSERT INTO snapshot_history(source_id, destination_id, created_utc, archive_path, archive_bytes) "
+                             "INSERT INTO archive_history(source_id, destination_id, created_utc, archive_path, archive_bytes) "
                              "VALUES(?1, ?2, ?3, ?4, ?5);");
     bindText(database_.get(), statement.get(), 1, sourceId);
     bindText(database_.get(), statement.get(), 2, destinationId);
@@ -406,8 +405,8 @@ void StateStore::recordSnapshot(std::string_view sourceId, std::string_view dest
     }
 }
 
-void StateStore::removeSnapshotRecord(std::int64_t id) {
-    auto statement = prepare(database_.get(), "DELETE FROM snapshot_history WHERE id = ?1;");
+void StateStore::removeArchiveRecord(std::int64_t id) {
+    auto statement = prepare(database_.get(), "DELETE FROM archive_history WHERE id = ?1;");
     if (sqlite3_bind_int64(statement.get(), 1, id) != SQLITE_OK || sqlite3_step(statement.get()) != SQLITE_DONE) {
         throw std::runtime_error(sqlite3_errmsg(database_.get()));
     }
@@ -477,7 +476,7 @@ std::optional<ProjectBackupDecision> StateStore::projectBackupDecision(std::stri
             return ProjectBackupDecision::alwaysAllow;
         }
         if (decision == "ignore") {
-            return ProjectBackupDecision::ignorePermanently;
+            return ProjectBackupDecision::ignoreLargeFiles;
         }
         throw std::runtime_error("State database contains an unknown Project backup decision.");
     }

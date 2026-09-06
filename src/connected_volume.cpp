@@ -73,12 +73,3 @@ std::vector<ConnectedVolume> findConnectedRemovableVolumes() {
     std::ranges::sort(volumes, {}, &ConnectedVolume::root);
     return volumes;
 }
-
-std::optional<ConnectedVolume> findConnectedRemovableVolume(std::uint32_t serial) {
-    const std::vector<ConnectedVolume> volumes = findConnectedRemovableVolumes();
-    const auto match = std::ranges::find(volumes, serial, &ConnectedVolume::serial);
-    if (match == volumes.end()) {
-        return std::nullopt;
-    }
-    return *match;
-}

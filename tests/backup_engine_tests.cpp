@@ -37,7 +37,7 @@ TEST_CASE("pending work waits for a missing folder Destination and runs when it 
     config.manualSources.push_back(ManualSource{"source-one", source, ManualSourceKind::folder});
     config.destinations.push_back(
         Destination{"destination-one", "Missing Destination", DestinationKind::path, destination, 0, {}});
-    config.routes.push_back(BackupRoute{"source-one", "destination-one", true, false, {}});
+    config.routes.push_back(BackupRoute{"source-one", "destination-one"});
     StateStore stateStore{testRoot / "state.db"};
     stateStore.markRouteDirty("source-one", "destination-one");
     BackupEngine engine;
@@ -46,9 +46,10 @@ TEST_CASE("pending work waits for a missing folder Destination and runs when it 
     REQUIRE(stateStore.routeState("source-one", "destination-one")->isDirty);
 
     std::filesystem::create_directories(destination);
-    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
+    const std::vector<BackupPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
     REQUIRE(plans.size() == 1);
-    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, testRoot / "logs");
+    const BackupRunSummary summary =
+        engine.runMirrors(plans, stateStore, testRoot / "logs", config.settings.largeFileThresholdBytes);
     REQUIRE(summary.succeeded == 1);
     REQUIRE_FALSE(stateStore.routeState("source-one", "destination-one")->isDirty);
 
@@ -75,11 +76,12 @@ TEST_CASE("an unavailable Destination does not block an available folder Destina
     StateStore stateStore{testRoot / "state.db"};
     BackupEngine engine;
 
-    const std::vector<MirrorPlan> plans = engine.previewMirrors(config, {});
+    const std::vector<BackupPlan> plans = engine.previewMirrors(config, {});
 
     REQUIRE(plans.size() == 1);
     REQUIRE(plans.front().destinationId == "available");
-    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, testRoot / "logs");
+    const BackupRunSummary summary =
+        engine.runMirrors(plans, stateStore, testRoot / "logs", config.settings.largeFileThresholdBytes);
     REQUIRE(summary.succeeded == 1);
     REQUIRE(std::filesystem::exists(availableDestination / "BackItUpTool" / "Mirrors" /
                                     buildMirrorRelativePath(source) / "file.txt"));
@@ -87,43 +89,43 @@ TEST_CASE("an unavailable Destination does not block an available folder Destina
     std::filesystem::remove_all(testRoot, cleanupError);
 }
 
-TEST_CASE("a changed route creates a ZIP snapshot beside the readable source path") {
+TEST_CASE("a changed Zipped Source creates a best-compression ZIP archive") {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path testRoot =
-        std::filesystem::temp_directory_path() / ("back-it-up-tool-snapshot-test-" + std::to_string(suffix));
+        std::filesystem::temp_directory_path() / ("back-it-up-tool-archive-test-" + std::to_string(suffix));
     const std::filesystem::path source = testRoot / "Documents" / "Example";
     const std::filesystem::path destination = testRoot / "destination";
     std::filesystem::create_directories(source);
     std::filesystem::create_directories(destination);
     {
         std::ofstream output{source / "file.txt"};
-        output << "snapshot content";
+        output << "archive content";
     }
 
     BackupConfig config;
-    config.manualSources.push_back(ManualSource{"source-one", source, ManualSourceKind::folder});
+    config.manualSources.push_back(
+        ManualSource{"source-one", source, ManualSourceKind::folder, BackupMode::zipped});
     config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
-    config.routes.push_back(BackupRoute{"source-one", "destination-one", true, true, {}});
+    config.routes.push_back(BackupRoute{"source-one", "destination-one"});
     StateStore stateStore{testRoot / "state.db"};
     stateStore.markRouteDirty("source-one", "destination-one");
 
     BackupEngine engine;
-    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, {}, stateStore);
-    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, testRoot / "logs");
-    REQUIRE(summary.succeeded == 1);
-    const std::vector<MirrorPlan> snapshotPlans = engine.previewDueSnapshots(config, {}, stateStore);
-    REQUIRE(snapshotPlans.size() == 1);
-    REQUIRE(engine.runSnapshots(config, snapshotPlans, stateStore).succeeded == 1);
-    const std::vector<SnapshotRecord> snapshots = stateStore.snapshotRecords("source-one", "destination-one");
-    REQUIRE(snapshots.size() == 1);
-    REQUIRE(std::filesystem::exists(snapshots.front().archivePath));
-    REQUIRE(snapshots.front().archivePath.string().find("Snapshots") != std::string::npos);
+    REQUIRE(engine.previewPendingMirrors(config, {}, stateStore).empty());
+    const std::vector<BackupPlan> archivePlans = engine.previewPendingArchives(config, {}, stateStore);
+    REQUIRE(archivePlans.size() == 1);
+    REQUIRE(engine.runArchives(archivePlans, stateStore, config.settings.largeFileThresholdBytes).succeeded == 1);
+    const std::vector<ArchiveRecord> archives = stateStore.archiveRecords("source-one", "destination-one");
+    REQUIRE(archives.size() == 1);
+    REQUIRE(std::filesystem::exists(archives.front().archivePath));
+    REQUIRE(archives.front().archivePath.string().find("Zipped") != std::string::npos);
+    REQUIRE_FALSE(stateStore.routeState("source-one", "destination-one")->isDirty);
 
     std::error_code cleanupError;
     std::filesystem::remove_all(testRoot, cleanupError);
 }
 
-TEST_CASE("a Projects Root mirrors only opted-in loose project files") {
+TEST_CASE("a Projects Root mirrors to an available folder while another Destination is unavailable") {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path testRoot =
         std::filesystem::temp_directory_path() / ("back-it-up-tool-project-mirror-test-" + std::to_string(suffix));
@@ -147,18 +149,23 @@ TEST_CASE("a Projects Root mirrors only opted-in loose project files") {
 
     BackupConfig config;
     config.projectsRoots.push_back(ProjectsRoot{"root-one", projectsRoot});
+    config.destinations.push_back(
+        Destination{"missing", "Disconnected", DestinationKind::path, testRoot / "missing", 0, {}});
     config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
-    config.routes.push_back(BackupRoute{"root-one", "destination-one", true, false, {}});
+    rebuildBackupRoutes(config);
     StateStore stateStore{testRoot / "state.db"};
+    stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "missing");
     stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
 
     BackupEngine engine;
     const std::vector<ConfiguredProjectsSource> projectsSources =
         discoverConfiguredProjects(config.projectsRoots).sources;
-    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, projectsSources, stateStore);
+    const std::vector<BackupPlan> plans = engine.previewPendingMirrors(config, projectsSources, stateStore);
     REQUIRE(plans.size() == 1);
-    const BackupRunSummary summary = engine.runMirrors(config, plans, stateStore, testRoot / "logs");
+    const BackupRunSummary summary =
+        engine.runMirrors(plans, stateStore, testRoot / "logs", config.settings.largeFileThresholdBytes);
     REQUIRE(summary.succeeded == 1);
+    REQUIRE(stateStore.routeState("01234567-89ab-4def-8123-456789abcdef", "missing")->isDirty);
     REQUIRE(std::filesystem::exists(plans.front().destination / "notes.txt"));
     REQUIRE_FALSE(std::filesystem::exists(plans.front().destination / ".backup-watch"));
     REQUIRE_FALSE(std::filesystem::exists(plans.front().destination / ".backup-ignore"));
@@ -186,20 +193,22 @@ TEST_CASE("an unchanged Project file is not rewritten during a later mirror") {
     BackupConfig config;
     config.projectsRoots.push_back(ProjectsRoot{"root-one", projectsRoot});
     config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
-    config.routes.push_back(BackupRoute{"root-one", "destination-one", true, false, {}});
+    config.routes.push_back(BackupRoute{"root-one", "destination-one"});
     StateStore stateStore{testRoot / "state.db"};
     stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
     BackupEngine engine;
     const auto projectsSources = discoverConfiguredProjects(config.projectsRoots).sources;
     const auto firstPlans = engine.previewPendingMirrors(config, projectsSources, stateStore);
-    REQUIRE(engine.runMirrors(config, firstPlans, stateStore, testRoot / "logs").succeeded == 1);
+    REQUIRE(engine.runMirrors(firstPlans, stateStore, testRoot / "logs",
+                              config.settings.largeFileThresholdBytes).succeeded == 1);
 
     const std::filesystem::path mirroredFile = firstPlans.front().destination / "notes.txt";
     std::filesystem::permissions(mirroredFile, std::filesystem::perms::owner_write,
                                  std::filesystem::perm_options::remove);
     stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
     const auto secondPlans = engine.previewPendingMirrors(config, projectsSources, stateStore);
-    REQUIRE(engine.runMirrors(config, secondPlans, stateStore, testRoot / "logs").succeeded == 1);
+    REQUIRE(engine.runMirrors(secondPlans, stateStore, testRoot / "logs",
+                              config.settings.largeFileThresholdBytes).succeeded == 1);
 
     std::error_code cleanupError;
     std::filesystem::permissions(mirroredFile, std::filesystem::perms::owner_write,
@@ -207,32 +216,38 @@ TEST_CASE("an unchanged Project file is not rewritten during a later mirror") {
     std::filesystem::remove_all(testRoot, cleanupError);
 }
 
-TEST_CASE("a due Project snapshot reads filtered source content without requiring a mirror") {
+TEST_CASE("a Zipped Project backup reads filtered source content without creating a mirror") {
     const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
     const std::filesystem::path testRoot =
-        std::filesystem::temp_directory_path() / ("back-it-up-tool-project-snapshot-test-" + std::to_string(suffix));
+        std::filesystem::temp_directory_path() / ("back-it-up-tool-project-archive-test-" + std::to_string(suffix));
     const std::filesystem::path projectsRoot = testRoot / "Projects";
     const std::filesystem::path project = projectsRoot / "LooseProject";
     const std::filesystem::path destination = testRoot / "destination";
     std::filesystem::create_directories(project / "build");
     std::filesystem::create_directories(destination);
     std::ofstream{project / ".backup-watch"} << "01234567-89ab-4def-8123-456789abcdef";
-    std::ofstream{project / "notes.txt"} << "snapshot source";
+    std::ofstream{project / "notes.txt"} << "this large file is skipped";
+    std::ofstream{project / "small.txt"} << "ok";
     std::ofstream{project / "build" / "generated.txt"} << "excluded";
 
     BackupConfig config;
-    config.projectsRoots.push_back(ProjectsRoot{"root-one", projectsRoot});
+    config.projectsRoots.push_back(ProjectsRoot{"root-one", projectsRoot, BackupMode::zipped});
     config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
-    config.routes.push_back(BackupRoute{"root-one", "destination-one", false, true, {}});
+    config.routes.push_back(BackupRoute{"root-one", "destination-one"});
+    config.settings.largeFileThresholdBytes = 10;
     StateStore stateStore{testRoot / "state.db"};
+    stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
+    stateStore.setProjectBackupDecision("01234567-89ab-4def-8123-456789abcdef",
+                                        ProjectBackupDecision::ignoreLargeFiles, "2026-09-06T12:00:00Z");
     BackupEngine engine;
     const auto projectsSources = discoverConfiguredProjects(config.projectsRoots).sources;
-    const auto snapshotPlans = engine.previewDueSnapshots(config, projectsSources, stateStore);
-    REQUIRE(snapshotPlans.size() == 1);
-    REQUIRE(engine.runSnapshots(config, snapshotPlans, stateStore).succeeded == 1);
-    const auto snapshots = stateStore.snapshotRecords("01234567-89ab-4def-8123-456789abcdef", "destination-one");
-    REQUIRE(snapshots.size() == 1);
-    REQUIRE(std::filesystem::exists(snapshots.front().archivePath));
+    const auto archivePlans = engine.previewPendingArchives(config, projectsSources, stateStore);
+    REQUIRE(archivePlans.size() == 1);
+    REQUIRE(engine.runArchives(archivePlans, stateStore, config.settings.largeFileThresholdBytes).succeeded == 1);
+    const auto archives = stateStore.archiveRecords("01234567-89ab-4def-8123-456789abcdef", "destination-one");
+    REQUIRE(archives.size() == 1);
+    REQUIRE(std::filesystem::exists(archives.front().archivePath));
+    REQUIRE(engine.previewPendingArchives(config, projectsSources, stateStore).empty());
 
     std::error_code cleanupError;
     std::filesystem::remove_all(testRoot, cleanupError);
@@ -256,16 +271,15 @@ TEST_CASE("size warnings use only eligible Project content") {
     BackupConfig config;
     config.projectsRoots.push_back(ProjectsRoot{"root-one", projectsRoot});
     config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
-    config.routes.push_back(BackupRoute{"root-one", "destination-one", true, false, {}});
+    config.routes.push_back(BackupRoute{"root-one", "destination-one"});
     config.settings.largeFileThresholdBytes = 50;
-    config.settings.projectSizeThresholdBytes = 1000;
     StateStore stateStore{testRoot / "state.db"};
     stateStore.markRouteDirty("01234567-89ab-4def-8123-456789abcdef", "destination-one");
 
     BackupEngine engine;
     const std::vector<ConfiguredProjectsSource> projectsSources =
         discoverConfiguredProjects(config.projectsRoots).sources;
-    const std::vector<MirrorPlan> plans = engine.previewPendingMirrors(config, projectsSources, stateStore);
+    const std::vector<BackupPlan> plans = engine.previewPendingMirrors(config, projectsSources, stateStore);
     const std::vector<SizeWarning> warnings = engine.findSizeWarnings(config, plans, stateStore);
     REQUIRE(warnings.size() == 1);
     REQUIRE(warnings.front().eligibleSizeBytes == 60);
@@ -291,7 +305,7 @@ TEST_CASE("manual folder routes do not show the Project size warning") {
     BackupConfig config;
     config.manualSources.push_back(ManualSource{"source-one", source, ManualSourceKind::folder});
     config.destinations.push_back(Destination{"destination-one", "Destination", DestinationKind::path, destination, 0, {}});
-    config.routes.push_back(BackupRoute{"source-one", "destination-one", true, false, {}});
+    config.routes.push_back(BackupRoute{"source-one", "destination-one"});
     config.settings.largeFileThresholdBytes = 50;
     StateStore stateStore{testRoot / "state.db"};
     stateStore.markRouteDirty("source-one", "destination-one");

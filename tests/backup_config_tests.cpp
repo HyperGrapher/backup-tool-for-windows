@@ -12,8 +12,9 @@ namespace {
 [[nodiscard]] BackupConfig populatedConfig() {
     BackupConfig config;
     config.manualSources.push_back(ManualSource{"source-notes", L"C:\\Users\\Burak\\Notes", ManualSourceKind::folder});
-    config.manualSources.push_back(ManualSource{"source-list", L"C:\\Users\\Burak\\todo.txt", ManualSourceKind::file});
-    config.projectsRoots.push_back(ProjectsRoot{"projects-main", L"D:\\Projects"});
+    config.manualSources.push_back(
+        ManualSource{"source-list", L"C:\\Users\\Burak\\todo.txt", ManualSourceKind::file, BackupMode::zipped});
+    config.projectsRoots.push_back(ProjectsRoot{"projects-main", L"D:\\Projects", BackupMode::zipped});
     config.destinations.push_back(Destination{
         "destination-folder",
         "Local backup",
@@ -30,8 +31,8 @@ namespace {
         0xA1B2C3D4,
         "BACKUP",
     });
-    config.routes.push_back(BackupRoute{"source-notes", "destination-folder", true, true, {24, 30, 12}});
-    config.routes.push_back(BackupRoute{"projects-main", "destination-flash", true, false, {24, 30, 12}});
+    config.routes.push_back(BackupRoute{"source-notes", "destination-folder"});
+    config.routes.push_back(BackupRoute{"projects-main", "destination-flash"});
     return config;
 }
 
@@ -48,12 +49,15 @@ TEST_CASE("backup configuration round-trips through JSON") {
 TEST_CASE("backup configuration uses operational defaults when optional JSON fields are absent") {
     const BackupConfig config = deserializeBackupConfig("{}");
 
-    REQUIRE(config.schemaVersion == 1);
+    REQUIRE(config.schemaVersion == 2);
     REQUIRE(config.settings.debounceSeconds == 8);
     REQUIRE(config.settings.largeFileThresholdBytes == 50ULL * 1024ULL * 1024ULL);
-    REQUIRE(config.settings.projectSizeThresholdBytes == 150ULL * 1024ULL * 1024ULL);
     REQUIRE(config.manualSources.empty());
     REQUIRE(config.projectsRoots.empty());
+}
+
+TEST_CASE("backup configuration rejects the obsolete schema") {
+    REQUIRE_THROWS_AS(deserializeBackupConfig(R"({"schemaVersion":1})"), std::invalid_argument);
 }
 
 TEST_CASE("backup configuration rejects a route with an unknown Source") {

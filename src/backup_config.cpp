@@ -72,12 +72,35 @@ using Json = nlohmann::json;
     throw std::invalid_argument("Unknown destination kind: " + std::string{value});
 }
 
+[[nodiscard]] std::string_view toString(BackupMode mode) {
+    switch (mode) {
+    case BackupMode::mirror:
+        return "mirror";
+    case BackupMode::zipped:
+        return "zipped";
+    }
+    throw std::invalid_argument("Unknown backup mode.");
+}
+
+[[nodiscard]] BackupMode backupModeFromString(std::string_view value) {
+    if (value == "mirror") {
+        return BackupMode::mirror;
+    }
+    if (value == "zipped") {
+        return BackupMode::zipped;
+    }
+    throw std::invalid_argument("Unknown backup mode: " + std::string{value});
+}
+
 [[nodiscard]] Json toJson(const ManualSource& source) {
-    return Json{{"id", source.id}, {"path", pathToUtf8(source.path)}, {"kind", toString(source.kind)}};
+    return Json{{"id", source.id},
+                {"path", pathToUtf8(source.path)},
+                {"kind", toString(source.kind)},
+                {"backupMode", toString(source.backupMode)}};
 }
 
 [[nodiscard]] Json toJson(const ProjectsRoot& root) {
-    return Json{{"id", root.id}, {"path", pathToUtf8(root.path)}};
+    return Json{{"id", root.id}, {"path", pathToUtf8(root.path)}, {"backupMode", toString(root.backupMode)}};
 }
 
 [[nodiscard]] Json toJson(const Destination& destination) {
@@ -94,29 +117,14 @@ using Json = nlohmann::json;
     return result;
 }
 
-[[nodiscard]] Json toJson(const SnapshotPolicy& policy) {
-    return Json{
-        {"intervalHours", policy.intervalHours},
-        {"retainDaily", policy.retainDaily},
-        {"retainMonthly", policy.retainMonthly},
-    };
-}
-
 [[nodiscard]] Json toJson(const BackupRoute& route) {
-    return Json{
-        {"sourceId", route.sourceId},
-        {"destinationId", route.destinationId},
-        {"mirrorEnabled", route.isMirrorEnabled},
-        {"snapshotsEnabled", route.areSnapshotsEnabled},
-        {"snapshotPolicy", toJson(route.snapshotPolicy)},
-    };
+    return Json{{"sourceId", route.sourceId}, {"destinationId", route.destinationId}};
 }
 
 [[nodiscard]] Json toJson(const BackupSettings& settings) {
     return Json{
         {"debounceSeconds", settings.debounceSeconds},
         {"largeFileThresholdBytes", settings.largeFileThresholdBytes},
-        {"projectSizeThresholdBytes", settings.projectSizeThresholdBytes},
     };
 }
 
@@ -125,11 +133,13 @@ using Json = nlohmann::json;
         json.at("id").get<std::string>(),
         pathFromUtf8(json.at("path").get<std::string>()),
         manualSourceKindFromString(json.at("kind").get<std::string>()),
+        backupModeFromString(json.at("backupMode").get<std::string>()),
     };
 }
 
 [[nodiscard]] ProjectsRoot projectsRootFromJson(const Json& json) {
-    return ProjectsRoot{json.at("id").get<std::string>(), pathFromUtf8(json.at("path").get<std::string>())};
+    return ProjectsRoot{json.at("id").get<std::string>(), pathFromUtf8(json.at("path").get<std::string>()),
+                        backupModeFromString(json.at("backupMode").get<std::string>())};
 }
 
 [[nodiscard]] Destination destinationFromJson(const Json& json) {
@@ -143,31 +153,14 @@ using Json = nlohmann::json;
     return destination;
 }
 
-[[nodiscard]] SnapshotPolicy snapshotPolicyFromJson(const Json& json) {
-    SnapshotPolicy policy;
-    policy.intervalHours = json.value("intervalHours", policy.intervalHours);
-    policy.retainDaily = json.value("retainDaily", policy.retainDaily);
-    policy.retainMonthly = json.value("retainMonthly", policy.retainMonthly);
-    return policy;
-}
-
 [[nodiscard]] BackupRoute routeFromJson(const Json& json) {
-    BackupRoute route;
-    route.sourceId = json.at("sourceId").get<std::string>();
-    route.destinationId = json.at("destinationId").get<std::string>();
-    route.isMirrorEnabled = json.value("mirrorEnabled", route.isMirrorEnabled);
-    route.areSnapshotsEnabled = json.value("snapshotsEnabled", route.areSnapshotsEnabled);
-    if (const auto policy = json.find("snapshotPolicy"); policy != json.end()) {
-        route.snapshotPolicy = snapshotPolicyFromJson(*policy);
-    }
-    return route;
+    return BackupRoute{json.at("sourceId").get<std::string>(), json.at("destinationId").get<std::string>()};
 }
 
 [[nodiscard]] BackupSettings settingsFromJson(const Json& json) {
     BackupSettings settings;
     settings.debounceSeconds = json.value("debounceSeconds", settings.debounceSeconds);
     settings.largeFileThresholdBytes = json.value("largeFileThresholdBytes", settings.largeFileThresholdBytes);
-    settings.projectSizeThresholdBytes = json.value("projectSizeThresholdBytes", settings.projectSizeThresholdBytes);
     return settings;
 }
 
@@ -215,11 +208,10 @@ std::string generateStableId(std::string_view prefix) {
 }
 
 void validateBackupConfig(const BackupConfig& config) {
-    if (config.schemaVersion != 1) {
+    if (config.schemaVersion != 2) {
         throw std::invalid_argument("Unsupported backup configuration schema version.");
     }
-    if (config.settings.debounceSeconds <= 0 || config.settings.largeFileThresholdBytes == 0 ||
-        config.settings.projectSizeThresholdBytes == 0) {
+    if (config.settings.debounceSeconds <= 0 || config.settings.largeFileThresholdBytes == 0) {
         throw std::invalid_argument("Backup setting values must be positive.");
     }
 
@@ -266,13 +258,6 @@ void validateBackupConfig(const BackupConfig& config) {
         if (!destinationIds.contains(route.destinationId)) {
             throw std::invalid_argument("Backup Route references an unknown Destination: " + route.destinationId);
         }
-        if (!route.isMirrorEnabled && !route.areSnapshotsEnabled) {
-            throw std::invalid_argument("Backup Route must enable Mirror, Snapshots, or both.");
-        }
-        if (route.snapshotPolicy.intervalHours <= 0 || route.snapshotPolicy.retainDaily < 0 ||
-            route.snapshotPolicy.retainMonthly < 0) {
-            throw std::invalid_argument("Snapshot policy values are invalid.");
-        }
         const std::string key = route.sourceId + '\n' + route.destinationId;
         if (!routeKeys.insert(key).second) {
             throw std::invalid_argument("Only one Backup Route may exist for a Source and Destination pair.");
@@ -286,7 +271,7 @@ void rebuildBackupRoutes(BackupConfig& config) {
     const auto addRoutes = [&](const auto& sources) {
         for (const auto& source : sources) {
             for (const Destination& destination : config.destinations) {
-                routes.push_back(BackupRoute{source.id, destination.id, true, true, {}});
+                routes.push_back(BackupRoute{source.id, destination.id});
             }
         }
     };

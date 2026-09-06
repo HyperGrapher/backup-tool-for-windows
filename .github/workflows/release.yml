@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-and-release:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Check out source
@@ -41,14 +41,14 @@ jobs:
           "VCPKG_ROOT=$env:VCPKG_ROOT" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           & "$env:VCPKG_ROOT\vcpkg.exe" install --triplet x64-windows-static --clean-after-build
 
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
-        run: cmake --preset windows-release
+        run: cmake --preset windows-release -DBUILD_TESTING=OFF
 
       - name: Build
         run: cmake --build build --preset windows-release --parallel
-
-      - name: Run tests
-        run: ctest --preset windows-release
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

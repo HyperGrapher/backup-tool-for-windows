@@ -90,9 +90,13 @@ namespace {
 }
 
 [[nodiscard]] DWORD runRobocopy(const std::filesystem::path& source, const std::filesystem::path& target,
-                                 const std::filesystem::path& logPath) {
+                                 const std::filesystem::path& logPath, bool followSymbolicLinks) {
     std::wstring command = L"robocopy.exe " + quoteArgument(source) + L" " + quoteArgument(target);
-    command += L" /MIR /XJ /FFT /R:1 /W:2 /NFL /NDL /NP /NJH /NJS /LOG+:" + quoteArgument(logPath);
+    command += L" /MIR ";
+    if (!followSymbolicLinks) {
+        command += L"/XJ ";
+    }
+    command += L"/FFT /R:1 /W:2 /NFL /NDL /NP /NJH /NJS /LOG+:" + quoteArgument(logPath);
     std::vector<wchar_t> writable(command.begin(), command.end());
     writable.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -142,8 +146,8 @@ void runTarZip(const std::filesystem::path& source, const std::filesystem::path&
 }
 
 void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path& archivePath,
-                      std::optional<std::uint64_t> maximumFileSizeBytes) {
-    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes);
+                      std::optional<std::uint64_t> maximumFileSizeBytes, bool followSymbolicLinks) {
+    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes, followSymbolicLinks);
     const std::filesystem::path listPath = std::filesystem::temp_directory_path() /
                                            (L"BackItUpTool-" + std::filesystem::path{generateUuid()}.wstring() +
                                             L".txt");
@@ -253,8 +257,8 @@ void pruneArchives(std::string_view sourceId, std::string_view destinationId, St
 }
 
 void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::path& destination,
-                           std::optional<std::uint64_t> maximumFileSizeBytes) {
-    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes);
+                           std::optional<std::uint64_t> maximumFileSizeBytes, bool followSymbolicLinks) {
+    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes, followSymbolicLinks);
     std::filesystem::create_directories(destination);
     std::set<std::filesystem::path> eligiblePaths;
     for (const EligibleProjectFile& file : contents.files) {
@@ -319,6 +323,20 @@ void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::
         return std::nullopt;
     }
     return largeFileThresholdBytes;
+}
+
+[[nodiscard]] bool hasExplicitProjectRoute(const BackupConfig& config, std::string_view projectId) {
+    return std::ranges::any_of(config.routes, [&](const BackupRoute& route) {
+               return route.sourceId == projectId;
+           }) ||
+           std::ranges::any_of(config.watchedProjects, [&](const WatchedProject& project) {
+               return project.id == projectId;
+           });
+}
+
+[[nodiscard]] bool projectFollowsSymbolicLinks(const BackupConfig& config, std::string_view projectId) {
+    const auto option = std::ranges::find(config.watchedProjects, projectId, &WatchedProject::id);
+    return option != config.watchedProjects.end() && option->followSymbolicLinks;
 }
 
 }  // namespace
@@ -392,7 +410,33 @@ std::vector<BackupPlan> BackupEngine::previewBackups(
                 throw std::runtime_error("Refusing a backup whose Source and Destination overlap.");
             }
             plans.push_back(BackupPlan{route.sourceId, manualSource->id, destination->id, manualSource->path, target,
-                                       manualSource->kind, false});
+                                       manualSource->kind, false, manualSource->followSymbolicLinks});
+            continue;
+        }
+
+        const auto directProject = std::ranges::find(projectsSources, route.sourceId,
+                                                     [](const ConfiguredProjectsSource& source) {
+                                                         return source.source.id;
+                                                     });
+        if (directProject != projectsSources.end()) {
+            const ProjectsRoot* projectsRoot = findProjectsRoot(config, directProject->rootId);
+            if (projectsRoot == nullptr || projectsRoot->backupMode != backupMode ||
+                !std::filesystem::is_directory(directProject->source.path) ||
+                std::filesystem::exists(directProject->source.path / L".git")) {
+                continue;
+            }
+            const std::filesystem::path relativePath = buildMirrorRelativePath(directProject->source.path);
+            const std::filesystem::path target =
+                backupMode == BackupMode::mirror
+                    ? availableDestinationRoot / L"BackItUpTool" / L"Mirrors" / relativePath
+                    : availableDestinationRoot / L"BackItUpTool" / L"Zipped" / relativePath.parent_path();
+            if (isSameOrInside(target, directProject->source.path) ||
+                isSameOrInside(directProject->source.path, target)) {
+                throw std::runtime_error("Refusing a backup whose Source and Destination overlap.");
+            }
+            plans.push_back(BackupPlan{directProject->rootId, directProject->source.id, destination->id,
+                                       directProject->source.path, target, ManualSourceKind::folder, true,
+                                       projectFollowsSymbolicLinks(config, directProject->source.id)});
             continue;
         }
 
@@ -402,6 +446,9 @@ std::vector<BackupPlan> BackupEngine::previewBackups(
         }
         for (const ConfiguredProjectsSource& configuredSource : projectsSources) {
             if (configuredSource.rootId != route.sourceId) {
+                continue;
+            }
+            if (hasExplicitProjectRoute(config, configuredSource.source.id)) {
                 continue;
             }
             const ProjectsSource& source = configuredSource.source;
@@ -418,7 +465,8 @@ std::vector<BackupPlan> BackupEngine::previewBackups(
                 throw std::runtime_error("Refusing a backup whose Source and Destination overlap.");
             }
             plans.push_back(BackupPlan{route.sourceId, source.id, destination->id, source.path, target,
-                                       ManualSourceKind::folder, true});
+                                       ManualSourceKind::folder, true,
+                                       projectFollowsSymbolicLinks(config, source.id)});
         }
     }
     return plans;
@@ -468,7 +516,8 @@ std::vector<SizeWarning> BackupEngine::findSizeWarnings(const BackupConfig& conf
             }
             const auto [preflight, inserted] = preflights.try_emplace(plan.sourceId);
             if (inserted) {
-                preflight->second = scanProject(ProjectsSource{plan.sourceId, plan.source}, config.settings);
+                preflight->second = scanProject(ProjectsSource{plan.sourceId, plan.source}, config.settings,
+                                                plan.followSymbolicLinks);
             }
             if (!preflight->second.requiresApproval()) {
                 continue;
@@ -500,7 +549,8 @@ BackupRunSummary BackupEngine::runMirrors(const std::vector<BackupPlan>& plans, 
                 DWORD exitCode = 1;
                 if (plan.isProjectsSource) {
                     mirrorProjectContents(ProjectsSource{plan.sourceId, plan.source}, plan.destination,
-                                          projectMaximumFileSize(plan, stateStore, largeFileThresholdBytes));
+                                          projectMaximumFileSize(plan, stateStore, largeFileThresholdBytes),
+                                          plan.followSymbolicLinks);
                 } else if (plan.sourceKind == ManualSourceKind::file) {
                     std::filesystem::create_directories(plan.destination.parent_path());
                     std::filesystem::copy_file(plan.source, plan.destination,
@@ -508,7 +558,8 @@ BackupRunSummary BackupEngine::runMirrors(const std::vector<BackupPlan>& plans, 
                 } else {
                     std::filesystem::create_directories(plan.destination);
                     exitCode = runRobocopy(plan.source, plan.destination,
-                                           logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"));
+                                           logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"),
+                                           plan.followSymbolicLinks);
                 }
                 if (exitCode >= 8) {
                     const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + " (robocopy " +
@@ -589,7 +640,8 @@ void BackupEngine::createArchive(const BackupPlan& plan, StateStore& stateStore,
     }
     if (plan.isProjectsSource) {
         runProjectTarZip(ProjectsSource{plan.sourceId, plan.source}, archivePath,
-                         projectMaximumFileSize(plan, stateStore, largeFileThresholdBytes));
+                         projectMaximumFileSize(plan, stateStore, largeFileThresholdBytes),
+                         plan.followSymbolicLinks);
     } else {
         runTarZip(plan.source, archivePath);
     }

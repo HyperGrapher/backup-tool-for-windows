@@ -19,6 +19,7 @@ struct BackupPlan {
     std::filesystem::path destination;
     ManualSourceKind sourceKind{ManualSourceKind::folder};
     bool isProjectsSource{};
+    bool followSymbolicLinks{};
 };
 
 struct BackupRunSummary {

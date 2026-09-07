@@ -20,6 +20,7 @@
 
 #include "config_store.hpp"
 #include "backup_mode_dialog.hpp"
+#include "backup_options_dialog.hpp"
 #include "native_file_dialog.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
@@ -84,6 +85,24 @@ using Ui::styleButton;
     return hasRoute ? status : UiTheme::BackupStatus::inactive;
 }
 
+[[nodiscard]] std::string destinationSummary(const BackupConfig& config, std::string_view sourceId) {
+    std::string result;
+    for (const BackupRoute& route : config.routes) {
+        if (route.sourceId != sourceId) {
+            continue;
+        }
+        const auto destination = std::ranges::find(config.destinations, route.destinationId, &Destination::id);
+        if (destination == config.destinations.end()) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += destination->name;
+    }
+    return result.empty() ? "No destinations selected" : result;
+}
+
 }  // namespace
 
 SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& config, const ConfigStore& configStore,
@@ -96,7 +115,7 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
 
     Ui::label(x + 24, y + 16, 220, 36, "Sources", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
     Ui::label(x + 24, y + 56, width - 48, 36,
-              "What to back up. Every source is copied to every configured destination.", 13, UiTheme::kSecondaryText);
+              "What to back up. Choose one or more destinations for each source.", 13, UiTheme::kSecondaryText);
     auto* files = new ActionButton(x + 24, y + 108, 112, 36, "Add files");
     styleButton(*files, true);
     files->callback(addFilesCallback, this);
@@ -105,13 +124,8 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
     removeButton_ = new ActionButton(x + 276, y + 108, 132, 36, "Remove…");
     styleButton(*removeButton_, false, true);
     removeButton_->callback(removeCallback, this);
-    auto* details = new ActionButton(x + 416, y + 108, 112, 36, "Details");
-    details->callback([](Fl_Widget*, void* context) {
-        auto* panel = static_cast<SourcesPanel*>(context);
-        const auto text = panel->sourceBrowser_->selectedDetails();
-        if (!text.empty()) { Ui::showDetails(text, "Source details"); }
-        else { panel->resultSummary_->copy_label("Select a source to see and copy its full path."); }
-    }, this);
+    auto* details = new ActionButton(x + 416, y + 108, 112, 36, "Edit details");
+    details->callback(detailsCallback, this);
     Ui::label(x + 24, y + 156, 64, 36, "Search", 13, UiTheme::kSecondaryText);
     searchInput_ = new Fl_Input(x + 92, y + 156, width - 116, 36);
     searchInput_->box(FL_BORDER_BOX);
@@ -148,8 +162,9 @@ void SourcesPanel::refresh() {
 
         const std::string status = std::string{UiTheme::statusText(sourceStatus(source, config_, stateStore_))};
         rows.push_back({source.id, {Ui::pathText(source.path.filename()) + "\n" + pathText, status, modeText},
-                       pathText + "\n" + typeText + " · " + modeText + "\n" + status +
-                       "\nCopied to all " + std::to_string(config_.destinations.size()) + " destinations."});
+                       pathText + "\n" + typeText + " · " + modeText +
+                       (source.followSymbolicLinks ? " · Following links" : " · Links skipped") + "\n" + status +
+                       "\nDestinations: " + destinationSummary(config_, source.id)});
     }
     const std::string summary = std::to_string(rows.size()) + " shown of " +
                                 std::to_string(config_.manualSources.size()) + " sources · Select rows for details or removal";
@@ -181,6 +196,10 @@ void SourcesPanel::selectionCallback(Fl_Widget*, void* context) {
     static_cast<SourcesPanel*>(context)->refreshSelectionState();
 }
 
+void SourcesPanel::detailsCallback(Fl_Widget*, void* context) {
+    static_cast<SourcesPanel*>(context)->editSelectedSource();
+}
+
 void SourcesPanel::addFiles() {
     try {
         addSources(selectFiles(fl_xid(window())), ManualSourceKind::file);
@@ -202,11 +221,10 @@ void SourcesPanel::addSources(const std::vector<std::filesystem::path>& paths, M
         return;
     }
 
-    const auto selectedMode = chooseBackupMode(paths.size());
-    if (!selectedMode.has_value()) {
+    const auto options = chooseBackupItemOptions(config_, paths.size(), BackupItemOptionsDialogInput{});
+    if (!options.has_value()) {
         return;
     }
-    const BackupMode backupMode = *selectedMode;
 
     BackupConfig updatedConfig = config_;
     std::unordered_set<std::wstring> knownPaths;
@@ -220,8 +238,12 @@ void SourcesPanel::addSources(const std::vector<std::filesystem::path>& paths, M
         if (!knownPaths.insert(normalizedPathKey(normalizedPath)).second) {
             continue;
         }
+        const std::string sourceId = generateStableId("source");
         updatedConfig.manualSources.push_back(
-            ManualSource{generateStableId("source"), normalizedPath, kind, backupMode});
+            ManualSource{sourceId, normalizedPath, kind, options->backupMode, options->followSymbolicLinks});
+        for (const std::string& destinationId : options->destinationIds) {
+            updatedConfig.routes.push_back(BackupRoute{sourceId, destinationId});
+        }
         ++addedCount;
     }
     if (addedCount == 0) {
@@ -236,6 +258,50 @@ void SourcesPanel::addSources(const std::vector<std::filesystem::path>& paths, M
     const std::string receipt = "Added " + std::to_string(addedCount) + " sources · " +
                                 std::to_string(paths.size() - addedCount) + " already configured";
     resultSummary_->copy_label(receipt.c_str());
+}
+
+void SourcesPanel::editSelectedSource() {
+    const auto selected = sourceBrowser_->selectedKeys();
+    if (selected.size() != 1) {
+        resultSummary_->copy_label(selected.empty() ? "Select one source to edit its options."
+                                                     : "Select one source at a time to edit its options.");
+        return;
+    }
+    const auto source = std::ranges::find(config_.manualSources, selected.front(), &ManualSource::id);
+    if (source == config_.manualSources.end()) {
+        return;
+    }
+
+    BackupItemOptions initial;
+    initial.backupMode = source->backupMode;
+    initial.followSymbolicLinks = source->followSymbolicLinks;
+    for (const BackupRoute& route : config_.routes) {
+        if (route.sourceId == source->id) {
+            initial.destinationIds.push_back(route.destinationId);
+        }
+    }
+    const auto options = chooseBackupItemOptions(config_, 1, BackupItemOptionsDialogInput{std::nullopt, initial});
+    if (!options.has_value()) {
+        return;
+    }
+
+    try {
+        BackupConfig updatedConfig = config_;
+        const auto updatedSource = std::ranges::find(updatedConfig.manualSources, source->id, &ManualSource::id);
+        updatedSource->backupMode = options->backupMode;
+        updatedSource->followSymbolicLinks = options->followSymbolicLinks;
+        std::erase_if(updatedConfig.routes, [&](const BackupRoute& route) { return route.sourceId == source->id; });
+        for (const std::string& destinationId : options->destinationIds) {
+            updatedConfig.routes.push_back(BackupRoute{source->id, destinationId});
+        }
+        configStore_.save(updatedConfig);
+        config_ = std::move(updatedConfig);
+        configChangedCallback_();
+        refresh();
+        resultSummary_->copy_label("Source options saved.");
+    } catch (const std::exception& error) {
+        reportError(error);
+    }
 }
 
 void SourcesPanel::removeSelectedSources() {

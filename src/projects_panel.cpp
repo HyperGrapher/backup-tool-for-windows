@@ -18,6 +18,7 @@
 
 #include "config_store.hpp"
 #include "backup_mode_dialog.hpp"
+#include "backup_options_dialog.hpp"
 #include "native_file_dialog.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
@@ -37,6 +38,30 @@ namespace {
 
 using Ui::styleButton;
 
+[[nodiscard]] std::string destinationSummary(const BackupConfig& config, std::string_view sourceId,
+                                             std::string_view fallbackRootId = {}) {
+    std::string result;
+    const bool hasExplicitRoutes = std::ranges::any_of(config.routes, [&](const BackupRoute& route) {
+        return route.sourceId == sourceId;
+    }) || std::ranges::any_of(config.watchedProjects, [&](const WatchedProject& project) {
+        return project.id == sourceId;
+    });
+    for (const BackupRoute& route : config.routes) {
+        if (route.sourceId != sourceId && (hasExplicitRoutes || fallbackRootId.empty() || route.sourceId != fallbackRootId)) {
+            continue;
+        }
+        const auto destination = std::ranges::find(config.destinations, route.destinationId, &Destination::id);
+        if (destination == config.destinations.end()) {
+            continue;
+        }
+        if (!result.empty()) {
+            result += ", ";
+        }
+        result += destination->name;
+    }
+    return result.empty() ? "No destinations selected" : result;
+}
+
 }  // namespace
 
 ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& config,
@@ -49,7 +74,7 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     begin();
     Ui::label(x + 24, y + 16, width - 48, 36, "Projects", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
     Ui::label(x + 24, y + 56, width - 48, 44,
-              "Choose a parent folder, then watch the projects you want backed up.", 14, UiTheme::kSecondaryText);
+              "Choose a parent folder, then watch projects and choose where each one is copied.", 14, UiTheme::kSecondaryText);
     auto* add = new ActionButton(x + 24, y + 108, 180, 36, "Add parent folder");
     styleButton(*add, true);
     add->callback(addRootsCallback, this);
@@ -59,7 +84,7 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     auto* help = new ActionButton(x + 420, y + 108, 112, 36, "How it works");
     help->callback([](Fl_Widget*, void*) {
         Ui::showDetails("Watching creates a .backup-watch marker in the selected folder.\n\n"
-                        "All watched projects use their parent folder's backup mode and all configured destinations.\n\n"
+                        "All watched projects use their parent folder's backup mode. Each project can choose its destinations.\n\n"
                         "Entire Git repository folders, generated folders such as build and node_modules, junctions, "
                         "and paths matched by .backup-ignore are excluded.\n\n"
                         "Removing a parent stops its backups; existing copies and marker files remain.", "Watching projects");
@@ -99,13 +124,8 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     watchButton_ = new ActionButton(x + 24, y + 252, 208, 36, "Watch selected folders");
     styleButton(*watchButton_, true);
     watchButton_->callback(watchCallback, this);
-    auto* details = new ActionButton(x + 244, y + 252, 112, 36, "Details");
-    details->callback([](Fl_Widget*, void* context) {
-        auto* panel = static_cast<ProjectsPanel*>(context);
-        const auto text = panel->rootBrowser_->selectedDetails();
-        if (!text.empty()) { Ui::showDetails(text, "Project details"); }
-        else { panel->resultSummary_->copy_label("Select a project to see its full path."); }
-    }, this);
+    auto* details = new ActionButton(x + 244, y + 252, 112, 36, "Edit details");
+    details->callback(detailsCallback, this);
     rootBrowser_ = new DataTable(x + 24, y + 300, width - 48, height - 356,
                                  {"Project / path", "State", "Backup mode"}, {55, 25, 20});
     rootBrowser_->callback(selectionCallback, this);
@@ -152,8 +172,13 @@ void ProjectsPanel::refreshProjectRows() {
             for (const auto& project : discovery_.sources) {
                 const std::string path = pathToUtf8(project.source.path);
                 if (project.rootId != root->id || (!query.empty() && path.find(query) == std::string::npos)) { continue; }
+                const auto projectOption = std::ranges::find(config_.watchedProjects, project.source.id,
+                                                             &WatchedProject::id);
                 rows.push_back({project.source.id, {pathToUtf8(project.source.path.filename()) + "\n" + path, "Watched", mode},
-                               path + "\nWatched · " + mode + "\nCopied to every destination."});
+                               path + "\nWatched · " + mode +
+                               (projectOption != config_.watchedProjects.end() && projectOption->followSymbolicLinks
+                                    ? " · Following links" : " · Links skipped") +
+                               "\nDestinations: " + destinationSummary(config_, project.source.id, root->id)});
             }
         } else {
             for (const auto& folder : discovery_.eligibleFolders) {
@@ -178,6 +203,7 @@ void ProjectsPanel::addRootsCallback(Fl_Widget*, void* context) { static_cast<Pr
 void ProjectsPanel::watchCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->watchSelectedFolders(); }
 void ProjectsPanel::removeCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->removeSelectedRoots(); }
 void ProjectsPanel::selectionCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->refreshSelectionState(); }
+void ProjectsPanel::detailsCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->editSelectedProject(); }
 
 void ProjectsPanel::addRoots() {
     try {
@@ -228,11 +254,27 @@ void ProjectsPanel::watchSelectedFolders() {
         return;
     }
 
+    const auto root = std::ranges::find(config_.projectsRoots, selectedParentId_, &ProjectsRoot::id);
+    if (root == config_.projectsRoots.end()) {
+        return;
+    }
+    BackupItemOptionsDialogInput dialogInput;
+    dialogInput.fixedBackupMode = root->backupMode;
+    const auto options = chooseBackupItemOptions(config_, folders.size(), std::move(dialogInput));
+    if (!options.has_value()) {
+        return;
+    }
+
     std::string firstError;
     std::size_t createdCount = 0;
+    BackupConfig updatedConfig = config_;
     for (const std::filesystem::path& folder : folders) {
         try {
-            createProjectWatchMarker(folder);
+            const std::string projectId = createProjectWatchMarker(folder);
+            updatedConfig.watchedProjects.push_back(WatchedProject{projectId, options->followSymbolicLinks});
+            for (const std::string& destinationId : options->destinationIds) {
+                updatedConfig.routes.push_back(BackupRoute{projectId, destinationId});
+            }
             ++createdCount;
         } catch (const std::exception& error) {
             firstError += pathToUtf8(folder) + ": " + error.what() + "\n";
@@ -240,6 +282,8 @@ void ProjectsPanel::watchSelectedFolders() {
     }
     if (createdCount > 0) {
         try {
+            configStore_.save(updatedConfig);
+            config_ = std::move(updatedConfig);
             configChangedCallback_();
         } catch (const std::exception& error) {
             reportError(error);
@@ -251,6 +295,74 @@ void ProjectsPanel::watchSelectedFolders() {
     if (!firstError.empty()) { Ui::showDetails(receipt + "\n\nCould not watch:\n" + firstError, "Some folders need attention"); }
 }
 
+void ProjectsPanel::editSelectedProject() {
+    if (filterChoice_->value() != 0) {
+        resultSummary_->copy_label("Switch to Watched projects to edit a project.");
+        return;
+    }
+    const auto selected = rootBrowser_->selectedKeys();
+    if (selected.size() != 1) {
+        resultSummary_->copy_label(selected.empty() ? "Select one project to edit its options."
+                                                     : "Select one project at a time to edit its options.");
+        return;
+    }
+    const auto project = std::ranges::find(discovery_.sources, selected.front(),
+                                          [](const ConfiguredProjectsSource& source) { return source.source.id; });
+    const auto root = std::ranges::find(config_.projectsRoots, selectedParentId_, &ProjectsRoot::id);
+    if (project == discovery_.sources.end() || root == config_.projectsRoots.end()) {
+        return;
+    }
+
+    BackupItemOptions initial;
+    initial.backupMode = root->backupMode;
+    const auto projectOption = std::ranges::find(config_.watchedProjects, project->source.id,
+                                                 &WatchedProject::id);
+    initial.followSymbolicLinks = projectOption != config_.watchedProjects.end() &&
+                                  projectOption->followSymbolicLinks;
+    for (const BackupRoute& route : config_.routes) {
+        if (route.sourceId == project->source.id) {
+            initial.destinationIds.push_back(route.destinationId);
+        }
+    }
+    if (initial.destinationIds.empty() && projectOption == config_.watchedProjects.end()) {
+        for (const BackupRoute& route : config_.routes) {
+            if (route.sourceId == root->id) {
+                initial.destinationIds.push_back(route.destinationId);
+            }
+        }
+    }
+    const auto options = chooseBackupItemOptions(
+        config_, 1, BackupItemOptionsDialogInput{root->backupMode, initial});
+    if (!options.has_value()) {
+        return;
+    }
+
+    try {
+        BackupConfig updatedConfig = config_;
+        const auto updatedOption = std::ranges::find(updatedConfig.watchedProjects, project->source.id,
+                                                     &WatchedProject::id);
+        if (updatedOption == updatedConfig.watchedProjects.end()) {
+            updatedConfig.watchedProjects.push_back(
+                WatchedProject{project->source.id, options->followSymbolicLinks});
+        } else {
+            updatedOption->followSymbolicLinks = options->followSymbolicLinks;
+        }
+        std::erase_if(updatedConfig.routes, [&](const BackupRoute& route) {
+            return route.sourceId == project->source.id;
+        });
+        for (const std::string& destinationId : options->destinationIds) {
+            updatedConfig.routes.push_back(BackupRoute{project->source.id, destinationId});
+        }
+        configStore_.save(updatedConfig);
+        config_ = std::move(updatedConfig);
+        configChangedCallback_();
+        refresh();
+        resultSummary_->copy_label("Project options saved.");
+    } catch (const std::exception& error) {
+        reportError(error);
+    }
+}
+
 void ProjectsPanel::removeSelectedRoots() {
     const std::vector<std::string> ids = selectedRootIds();
     if (ids.empty() || fl_choice("Remove the selected Project Roots? Existing backups stay untouched.", "Cancel",
@@ -260,8 +372,20 @@ void ProjectsPanel::removeSelectedRoots() {
     try {
         const std::unordered_set<std::string> selected(ids.begin(), ids.end());
         BackupConfig updated = config_;
+        std::unordered_set<std::string> removedProjectIds;
+        for (const ConfiguredProjectsSource& project : discovery_.sources) {
+            if (selected.contains(project.rootId)) {
+                removedProjectIds.insert(project.source.id);
+            }
+        }
         std::erase_if(updated.projectsRoots, [&](const ProjectsRoot& root) { return selected.contains(root.id); });
+        std::erase_if(updated.watchedProjects, [&](const WatchedProject& project) {
+            return removedProjectIds.contains(project.id);
+        });
         std::erase_if(updated.routes, [&](const BackupRoute& route) { return selected.contains(route.sourceId); });
+        std::erase_if(updated.routes, [&](const BackupRoute& route) {
+            return removedProjectIds.contains(route.sourceId);
+        });
         configStore_.save(updated);
         config_ = std::move(updated);
         configChangedCallback_();

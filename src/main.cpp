@@ -196,7 +196,12 @@ void configureLogging(const std::filesystem::path& dataDirectory) {
     const bool doesConfigExist = std::filesystem::exists(store.path());
     BackupConfig config = store.load();
     const std::vector<BackupRoute> previousRoutes = config.routes;
-    rebuildBackupRoutes(config);
+    // Migrate older configurations that predate explicit destination selection. New
+    // items create their own routes and later edits preserve the user's choices.
+    if (config.routes.empty() && !config.destinations.empty() &&
+        (!config.manualSources.empty() || !config.projectsRoots.empty())) {
+        rebuildBackupRoutes(config);
+    }
     if (!doesConfigExist || config.routes != previousRoutes) {
         store.save(config);
     }
@@ -771,7 +776,6 @@ private:
     }
 
     void handleConfigChanged() {
-        rebuildBackupRoutes(config_);
         configStore_.save(config_);
         sourcesPanel_->refresh();
         projectsPanel_->refresh();
@@ -800,10 +804,26 @@ private:
                 }
                 continue;
             }
+            const bool isExplicitProject = std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
+                return source.source.id == route.sourceId;
+            });
+            if (isExplicitProject) {
+                const std::optional<RouteRuntimeState> state =
+                    stateStore_.routeState(route.sourceId, route.destinationId);
+                if (!state.has_value() || !state->lastSuccessUtc.has_value()) {
+                    stateStore_.markRouteDirty(route.sourceId, route.destinationId);
+                }
+                continue;
+            }
             for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
                 const std::optional<RouteRuntimeState> state =
                     stateStore_.routeState(projectsSource.source.id, route.destinationId);
-                if (projectsSource.rootId == route.sourceId &&
+                const bool hasExplicitRoute = std::ranges::any_of(config_.routes, [&](const BackupRoute& projectRoute) {
+                    return projectRoute.sourceId == projectsSource.source.id;
+                }) || std::ranges::any_of(config_.watchedProjects, [&](const WatchedProject& project) {
+                    return project.id == projectsSource.source.id;
+                });
+                if (!hasExplicitRoute && projectsSource.rootId == route.sourceId &&
                     (!state.has_value() || !state->lastSuccessUtc.has_value())) {
                     stateStore_.markRouteDirty(projectsSource.source.id, route.destinationId);
                 }
@@ -833,7 +853,12 @@ private:
             target.sourceId = projectsSource.source.id;
             target.directory = projectsSource.source.path;
             target.isRecursive = true;
-            auto changeFilter = std::make_shared<ProjectChangeFilter>(projectsSource.source.path);
+            const auto projectOption = std::ranges::find(config_.watchedProjects, projectsSource.source.id,
+                                                         &WatchedProject::id);
+            const bool followSymbolicLinks = projectOption != config_.watchedProjects.end() &&
+                                             projectOption->followSymbolicLinks;
+            auto changeFilter = std::make_shared<ProjectChangeFilter>(projectsSource.source.path,
+                                                                       followSymbolicLinks);
             target.isRelevantChange = [changeFilter](const std::filesystem::path& relativePath) {
                 return (*changeFilter)(relativePath);
             };
@@ -1114,7 +1139,15 @@ private:
                 return true;
             }
             return std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
-                return source.rootId == route.sourceId && source.source.id == state.sourceId;
+                if (source.rootId != route.sourceId || source.source.id != state.sourceId) {
+                    return false;
+                }
+                const bool hasExplicitRoute = std::ranges::any_of(config_.routes, [&](const BackupRoute& projectRoute) {
+                    return projectRoute.sourceId == state.sourceId;
+                }) || std::ranges::any_of(config_.watchedProjects, [&](const WatchedProject& project) {
+                    return project.id == state.sourceId;
+                });
+                return !hasExplicitRoute;
             });
         });
     }

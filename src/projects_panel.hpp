@@ -46,9 +46,11 @@ private:
     static void watchCallback(Fl_Widget*, void* context);
     static void removeCallback(Fl_Widget*, void* context);
     static void selectionCallback(Fl_Widget*, void* context);
+    static void detailsCallback(Fl_Widget*, void* context);
 
     void addRoots();
     void watchSelectedFolders();
+    void editSelectedProject();
     void removeSelectedRoots();
     [[nodiscard]] std::vector<std::string> selectedRootIds() const;
     [[nodiscard]] std::vector<std::filesystem::path> selectedEligibleFolders() const;

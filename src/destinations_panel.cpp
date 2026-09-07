@@ -71,7 +71,7 @@ DestinationsPanel::DestinationsPanel(int x, int y, int width, int height, Backup
 
     Ui::label(x + 24, y + 16, width - 48, 36, "Destinations", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
     Ui::label(x + 24, y + 56, width - 48, 40,
-              "Where copies go. Every destination receives all your sources and watched projects.", 13, UiTheme::kSecondaryText);
+              "Where copies go. Each source and project can choose one or more destinations.", 13, UiTheme::kSecondaryText);
     connectedDriveChoice_ = new Fl_Choice(x + 24, y + 108, width - 276, 36);
     connectedDriveChoice_->box(FL_BORDER_BOX);
     connectedDriveChoice_->color(UiTheme::kSurface);

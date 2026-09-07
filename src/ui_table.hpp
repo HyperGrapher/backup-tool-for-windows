@@ -33,7 +33,7 @@ public:
         col_header(1);
         col_header_height(32);
         row_header(0);
-        row_height_all(48);
+        row_height_all(42);
         when(FL_WHEN_CHANGED);
         end();
         styleScrollbars();
@@ -46,7 +46,7 @@ public:
         entries_ = std::move(entries);
         rows(static_cast<int>(entries_.size()));
         focusedRow_ = std::clamp(focusedRow_, 0, std::max(0, rows() - 1));
-        row_height_all(48);
+        row_height_all(42);
         select_all_rows(0);
         for (int index = 0; index < rows(); ++index) {
             if (std::ranges::find(selection, entries_[index].key) != selection.end()) {
@@ -164,10 +164,27 @@ protected:
         fl_rectf(x, y, width, height);
         fl_color(UiTheme::kBorder);
         fl_line(x, y + height - 1, x + width, y + height - 1);
-        fl_font(isHeader ? UiTheme::kUiFontSemibold : UiTheme::kUiFont, isHeader ? 12 : 13);
-        fl_color(isHeader ? UiTheme::kSecondaryText : UiTheme::kText);
         const std::string& text = isHeader ? headings_.at(column) : entries_.at(row).cells.at(column);
-        if (!isHeader) {
+        if (isHeader) {
+            fl_font(UiTheme::kUiFontSemibold, 12);
+            fl_color(UiTheme::kSecondaryText);
+            fl_draw(text.c_str(), x + 12, y + 4, width - 24, height - 8,
+                    FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+        } else if (column == 0 && text.find('\n') != std::string::npos) {
+            const std::size_t separator = text.find('\n');
+            const std::string title = text.substr(0, separator);
+            const std::string path = text.substr(separator + 1);
+            fl_font(UiTheme::kUiFontSemibold, 13);
+            fl_color(UiTheme::kText);
+            fl_draw(title.c_str(), x + 12, y + 3, width - 24, 17,
+                    FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+            fl_font(UiTheme::kUiFont, 11);
+            fl_color(UiTheme::kSecondaryText);
+            fl_draw(path.c_str(), x + 12, y + 21, width - 24, 16,
+                    FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+        } else {
+            fl_font(UiTheme::kUiFont, 12);
+            fl_color(UiTheme::kText);
             if (text == "Current" || text == "Connected") {
                 fl_color(UiTheme::kSafe);
             } else if (text == "Action needed" || text == "Unavailable") {
@@ -175,9 +192,9 @@ protected:
             } else if (text == "Waiting" || text == "Disconnected" || text == "Never backed up") {
                 fl_color(UiTheme::kPending);
             }
+            fl_draw(text.c_str(), x + 12, y + 4, width - 24, height - 8,
+                    FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
         }
-        fl_draw(text.c_str(), x + 12, y + 4, width - 24, height - 8,
-                FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
         if (!isHeader && row == focusedRow_ && Fl::focus() == this) {
             fl_color(UiTheme::kFocus);
             fl_line(x, y + height - 2, x + width, y + height - 2);

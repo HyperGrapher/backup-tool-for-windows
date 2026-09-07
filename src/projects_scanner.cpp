@@ -135,6 +135,12 @@ constexpr wchar_t kIgnoreFileName[] = L".backup-ignore";
     return (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
+[[nodiscard]] bool isSymbolicLink(const std::filesystem::path& path) {
+    std::error_code error;
+    const bool result = std::filesystem::is_symlink(path, error);
+    return !error && result;
+}
+
 [[nodiscard]] bool containsGitMarker(const std::filesystem::path& directory) {
     std::error_code error;
     const bool exists = std::filesystem::exists(directory / L".git", error);
@@ -154,8 +160,8 @@ constexpr wchar_t kIgnoreFileName[] = L".backup-ignore";
 
 [[nodiscard]] bool shouldPruneDirectory(const std::filesystem::path& path,
                                         const std::filesystem::path& relativePath,
-                                        const IgnoreRules& ignoreRules) {
-    if (isReparsePoint(path)) {
+                                        const IgnoreRules& ignoreRules, bool followSymbolicLinks) {
+    if (isReparsePoint(path) && (!followSymbolicLinks || !isSymbolicLink(path))) {
         return true;
     }
     const std::wstring directoryName = path.filename().wstring();
@@ -171,7 +177,8 @@ constexpr wchar_t kIgnoreFileName[] = L".backup-ignore";
 }  // namespace
 
 struct ProjectChangeFilter::Implementation {
-    explicit Implementation(std::filesystem::path root) : sourceRoot(std::move(root)) {
+    explicit Implementation(std::filesystem::path root, bool followLinks)
+        : sourceRoot(std::move(root)), followSymbolicLinks(followLinks) {
         refreshIgnoreRules();
     }
 
@@ -203,10 +210,11 @@ struct ProjectChangeFilter::Implementation {
     std::filesystem::path sourceRoot;
     IgnoreRules ignoreRules;
     std::optional<std::filesystem::file_time_type> ignoreWriteTime;
+    bool followSymbolicLinks{};
 };
 
-ProjectChangeFilter::ProjectChangeFilter(std::filesystem::path sourceRoot)
-    : implementation_(std::make_unique<Implementation>(std::move(sourceRoot))) {}
+ProjectChangeFilter::ProjectChangeFilter(std::filesystem::path sourceRoot, bool followSymbolicLinks)
+    : implementation_(std::make_unique<Implementation>(std::move(sourceRoot), followSymbolicLinks)) {}
 
 ProjectChangeFilter::~ProjectChangeFilter() = default;
 
@@ -238,6 +246,17 @@ bool ProjectChangeFilter::operator()(const std::filesystem::path& relativePath) 
     }
 
     std::error_code typeError;
+    const std::filesystem::path changedPath = implementation_->sourceRoot / relativePath;
+    if (!implementation_->followSymbolicLinks) {
+        std::error_code reparseError;
+        const auto status = std::filesystem::symlink_status(changedPath, reparseError);
+        const DWORD attributes = GetFileAttributesW(changedPath.c_str());
+        if (!reparseError && (status.type() == std::filesystem::file_type::symlink ||
+                              (attributes != INVALID_FILE_ATTRIBUTES &&
+                               (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0))) {
+            return false;
+        }
+    }
     const bool isDirectory = std::filesystem::is_directory(implementation_->sourceRoot / relativePath, typeError);
     return !implementation_->ignoreRules.isIgnored(relativePath, isDirectory) &&
            !implementation_->ignoreRules.isIgnored(relativePath, true);
@@ -348,7 +367,7 @@ bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath) {
     return filename == L".backup-watch" || filename == L".git";
 }
 
-void createProjectWatchMarker(const std::filesystem::path& projectFolder) {
+std::string createProjectWatchMarker(const std::filesystem::path& projectFolder) {
     if (!std::filesystem::is_directory(projectFolder)) {
         throw std::invalid_argument("The selected Project folder is unavailable or is not a directory.");
     }
@@ -390,10 +409,12 @@ void createProjectWatchMarker(const std::filesystem::path& projectFolder) {
         throw std::runtime_error("Unable to create .backup-watch. Windows error " +
                                  std::to_string(error) + '.');
     }
+    return id;
 }
 
 ProjectContents collectProjectContents(const ProjectsSource& source,
-                                       std::optional<std::uint64_t> maximumFileSizeBytes) {
+                                       std::optional<std::uint64_t> maximumFileSizeBytes,
+                                       bool followSymbolicLinks) {
     if (source.id.empty() || source.path.empty()) {
         throw std::invalid_argument("Projects Source must have an ID and path.");
     }
@@ -410,8 +431,12 @@ ProjectContents collectProjectContents(const ProjectsSource& source,
 
     const IgnoreRules ignoreRules = IgnoreRules::load(source.path / kIgnoreFileName);
     std::error_code iterationError;
+    const auto directoryOptions = followSymbolicLinks ? std::filesystem::directory_options::follow_directory_symlink
+                                                       : std::filesystem::directory_options::none;
+    std::unordered_set<std::filesystem::path> visitedDirectories;
+    visitedDirectories.insert(std::filesystem::weakly_canonical(source.path));
     for (std::filesystem::recursive_directory_iterator iterator{
-             source.path, std::filesystem::directory_options::none, iterationError},
+             source.path, directoryOptions, iterationError},
          end;
          iterator != end; iterator.increment(iterationError)) {
         if (iterationError) {
@@ -425,15 +450,22 @@ ProjectContents collectProjectContents(const ProjectsSource& source,
             if (typeError) {
                 throw std::runtime_error("Unable to inspect a Projects Source directory.");
             }
-            if (shouldPruneDirectory(entry.path(), relativePath, ignoreRules)) {
+            if (shouldPruneDirectory(entry.path(), relativePath, ignoreRules, followSymbolicLinks)) {
                 iterator.disable_recursion_pending();
+            } else if (followSymbolicLinks) {
+                std::error_code canonicalError;
+                const std::filesystem::path canonicalPath = std::filesystem::weakly_canonical(entry.path(), canonicalError);
+                if (canonicalError || !visitedDirectories.insert(canonicalPath).second) {
+                    iterator.disable_recursion_pending();
+                }
             }
             continue;
         }
         if (typeError) {
             throw std::runtime_error("Unable to inspect a Projects Source item.");
         }
-        if (isReparsePoint(entry.path()) || !entry.is_regular_file(typeError) || typeError ||
+        if ((isReparsePoint(entry.path()) && (!followSymbolicLinks || !isSymbolicLink(entry.path()))) ||
+            !entry.is_regular_file(typeError) || typeError ||
             isToolMetadata(relativePath) || ignoreRules.isIgnored(relativePath, false)) {
             continue;
         }
@@ -453,14 +485,15 @@ ProjectContents collectProjectContents(const ProjectsSource& source,
     return contents;
 }
 
-ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings) {
+ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings,
+                             bool followSymbolicLinks) {
     if (source.id.empty() || source.path.empty()) {
         throw std::invalid_argument("Projects Source must have an ID and path.");
     }
     if (settings.largeFileThresholdBytes == 0) {
         throw std::invalid_argument("The large file threshold must be positive.");
     }
-    const ProjectContents contents = collectProjectContents(source);
+    const ProjectContents contents = collectProjectContents(source, std::nullopt, followSymbolicLinks);
     ProjectPreflight preflight;
     preflight.source = source;
     preflight.isGitRepository = contents.isGitRepository;

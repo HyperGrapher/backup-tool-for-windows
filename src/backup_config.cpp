@@ -96,11 +96,16 @@ using Json = nlohmann::json;
     return Json{{"id", source.id},
                 {"path", pathToUtf8(source.path)},
                 {"kind", toString(source.kind)},
-                {"backupMode", toString(source.backupMode)}};
+                {"backupMode", toString(source.backupMode)},
+                {"followSymbolicLinks", source.followSymbolicLinks}};
 }
 
 [[nodiscard]] Json toJson(const ProjectsRoot& root) {
     return Json{{"id", root.id}, {"path", pathToUtf8(root.path)}, {"backupMode", toString(root.backupMode)}};
+}
+
+[[nodiscard]] Json toJson(const WatchedProject& project) {
+    return Json{{"id", project.id}, {"followSymbolicLinks", project.followSymbolicLinks}};
 }
 
 [[nodiscard]] Json toJson(const Destination& destination) {
@@ -134,12 +139,17 @@ using Json = nlohmann::json;
         pathFromUtf8(json.at("path").get<std::string>()),
         manualSourceKindFromString(json.at("kind").get<std::string>()),
         backupModeFromString(json.at("backupMode").get<std::string>()),
+        json.value("followSymbolicLinks", false),
     };
 }
 
 [[nodiscard]] ProjectsRoot projectsRootFromJson(const Json& json) {
     return ProjectsRoot{json.at("id").get<std::string>(), pathFromUtf8(json.at("path").get<std::string>()),
                         backupModeFromString(json.at("backupMode").get<std::string>())};
+}
+
+[[nodiscard]] WatchedProject watchedProjectFromJson(const Json& json) {
+    return WatchedProject{json.at("id").get<std::string>(), json.value("followSymbolicLinks", false)};
 }
 
 [[nodiscard]] Destination destinationFromJson(const Json& json) {
@@ -219,6 +229,9 @@ void validateBackupConfig(const BackupConfig& config) {
                      "manual source");
     requireUniqueIds(config.projectsRoots, [](const ProjectsRoot& root) -> const std::string& { return root.id; },
                      "Projects Root");
+    requireUniqueIds(config.watchedProjects,
+                     [](const WatchedProject& project) -> const std::string& { return project.id; },
+                     "watched project");
     requireUniqueIds(config.destinations, [](const Destination& destination) -> const std::string& {
         return destination.id;
     }, "destination");
@@ -239,6 +252,12 @@ void validateBackupConfig(const BackupConfig& config) {
         }
     }
 
+    for (const WatchedProject& project : config.watchedProjects) {
+        if (sourceIds.contains(project.id)) {
+            throw std::invalid_argument("Watched Project ID conflicts with another Source: " + project.id);
+        }
+    }
+
     std::unordered_set<std::string> destinationIds;
     for (const Destination& destination : config.destinations) {
         if (destination.name.empty() || destination.root.empty()) {
@@ -251,8 +270,12 @@ void validateBackupConfig(const BackupConfig& config) {
     }
 
     std::unordered_set<std::string> routeKeys;
+    std::unordered_set<std::string> watchedProjectIds;
+    for (const WatchedProject& project : config.watchedProjects) {
+        watchedProjectIds.insert(project.id);
+    }
     for (const BackupRoute& route : config.routes) {
-        if (!sourceIds.contains(route.sourceId)) {
+        if (!sourceIds.contains(route.sourceId) && !watchedProjectIds.contains(route.sourceId)) {
             throw std::invalid_argument("Backup Route references an unknown Source: " + route.sourceId);
         }
         if (!destinationIds.contains(route.destinationId)) {
@@ -286,6 +309,7 @@ std::string serializeBackupConfig(const BackupConfig& config) {
         {"schemaVersion", config.schemaVersion},
         {"manualSources", Json::array()},
         {"projectsRoots", Json::array()},
+        {"watchedProjects", Json::array()},
         {"destinations", Json::array()},
         {"routes", Json::array()},
         {"settings", toJson(config.settings)},
@@ -295,6 +319,9 @@ std::string serializeBackupConfig(const BackupConfig& config) {
     }
     for (const ProjectsRoot& root : config.projectsRoots) {
         json["projectsRoots"].push_back(toJson(root));
+    }
+    for (const WatchedProject& project : config.watchedProjects) {
+        json["watchedProjects"].push_back(toJson(project));
     }
     for (const Destination& destination : config.destinations) {
         json["destinations"].push_back(toJson(destination));
@@ -314,6 +341,9 @@ BackupConfig deserializeBackupConfig(std::string_view jsonText) {
     }
     for (const Json& root : json.value("projectsRoots", Json::array())) {
         config.projectsRoots.push_back(projectsRootFromJson(root));
+    }
+    for (const Json& project : json.value("watchedProjects", Json::array())) {
+        config.watchedProjects.push_back(watchedProjectFromJson(project));
     }
     for (const Json& destination : json.value("destinations", Json::array())) {
         config.destinations.push_back(destinationFromJson(destination));

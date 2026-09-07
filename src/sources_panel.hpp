@@ -40,10 +40,12 @@ private:
     static void removeCallback(Fl_Widget*, void* context);
     static void searchCallback(Fl_Widget*, void* context);
     static void selectionCallback(Fl_Widget*, void* context);
+    static void detailsCallback(Fl_Widget*, void* context);
 
     void addFiles();
     void addFolders();
     void addSources(const std::vector<std::filesystem::path>& paths, ManualSourceKind kind);
+    void editSelectedSource();
     void removeSelectedSources();
     [[nodiscard]] std::vector<std::string> selectedSourceIds() const;
     void refreshSelectionState();

@@ -19,7 +19,7 @@
     dialog.color(UiTheme::kBackground);
     const std::string heading = "How should these " + std::to_string(itemCount) + " items be backed up?";
     Ui::label(24, 20, 592, 36, heading.c_str(), 20, UiTheme::kText, UiTheme::kUiFontSemibold);
-    Ui::label(24, 62, 592, 36, "All configured destinations receive a copy. Choose one mode to continue.", 13,
+    Ui::label(24, 62, 592, 36, "You can choose destinations when you add each source or watched project.", 13,
               UiTheme::kSecondaryText);
     choice.mirror = new Fl_Round_Button(24, 110, 592, 32, "Mirror — a browsable copy of the latest state");
     choice.zipped = new Fl_Round_Button(24, 214, 592, 32, "Zipped — compressed snapshots with history");

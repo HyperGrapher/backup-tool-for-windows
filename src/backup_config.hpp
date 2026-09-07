@@ -26,6 +26,7 @@ struct ManualSource {
     std::filesystem::path path;
     ManualSourceKind kind{ManualSourceKind::folder};
     BackupMode backupMode{BackupMode::mirror};
+    bool followSymbolicLinks{};
 
     bool operator==(const ManualSource&) const = default;
 };
@@ -36,6 +37,13 @@ struct ProjectsRoot {
     BackupMode backupMode{BackupMode::mirror};
 
     bool operator==(const ProjectsRoot&) const = default;
+};
+
+struct WatchedProject {
+    std::string id;
+    bool followSymbolicLinks{};
+
+    bool operator==(const WatchedProject&) const = default;
 };
 
 struct Destination {
@@ -67,6 +75,7 @@ struct BackupConfig {
     int schemaVersion{2};
     std::vector<ManualSource> manualSources;
     std::vector<ProjectsRoot> projectsRoots;
+    std::vector<WatchedProject> watchedProjects;
     std::vector<Destination> destinations;
     std::vector<BackupRoute> routes;
     BackupSettings settings;

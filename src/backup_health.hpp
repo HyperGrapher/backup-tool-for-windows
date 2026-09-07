@@ -52,9 +52,20 @@ struct BackupHealth {
         })) { continue; }
         if (std::ranges::any_of(config.manualSources, [&](const ManualSource& source) { return source.id == route.sourceId; })) {
             inspect(route.sourceId, route.destinationId);
+        } else if (std::ranges::any_of(projects, [&](const ConfiguredProjectsSource& project) {
+                       return project.source.id == route.sourceId;
+                   })) {
+            inspect(route.sourceId, route.destinationId);
         } else {
             for (const auto& project : projects) {
-                if (project.rootId == route.sourceId) { inspect(project.source.id, route.destinationId); }
+                const bool hasExplicitRoute = std::ranges::any_of(config.routes, [&](const BackupRoute& projectRoute) {
+                    return projectRoute.sourceId == project.source.id;
+                }) || std::ranges::any_of(config.watchedProjects, [&](const WatchedProject& watchedProject) {
+                    return watchedProject.id == project.source.id;
+                });
+                if (!hasExplicitRoute && project.rootId == route.sourceId) {
+                    inspect(project.source.id, route.destinationId);
+                }
             }
         }
     }

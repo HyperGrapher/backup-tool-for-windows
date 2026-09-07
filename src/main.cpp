@@ -216,6 +216,7 @@ void styleButton(Fl_Button& button, bool isSelected = false, bool isStrong = fal
     button.labelcolor(UiTheme::kText);
     button.labelfont(isSelected || isStrong ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
+    button.clear_visible_focus();
 }
 
 enum class NavigationIcon {
@@ -233,6 +234,7 @@ public:
         : Fl_Button(x, y, width, height, label), icon_(icon) {
         box(FL_NO_BOX);
         down_box(FL_NO_BOX);
+        clear_visible_focus();
     }
 
     void setSelected(bool isSelected) {
@@ -276,10 +278,6 @@ public:
         fl_color(isSelected_ ? UiTheme::kText : UiTheme::kSecondaryText);
         fl_font(isSelected_ ? UiTheme::kUiFontSemibold : UiTheme::kUiFont, 12);
         fl_draw(label(), x() + 42, y(), w() - 50, h(), FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
-        if (Fl::focus() == this) {
-            fl_color(UiTheme::kSecondaryText);
-            fl_rect(x() + 4, y() + 3, w() - 8, h() - 6);
-        }
     }
 
 private:
@@ -398,10 +396,9 @@ public:
             centerWindow();
             hasPositionedWindow_ = true;
         }
-        window_->show();
+        showWithDarkWindowChrome(*window_);
 
         const HWND nativeWindow = fl_xid(window_.get());
-        applyDarkWindowChrome(nativeWindow);
         ShowWindow(nativeWindow, SW_SHOWNORMAL);
         SetForegroundWindow(nativeWindow);
         BringWindowToTop(nativeWindow);
@@ -573,6 +570,7 @@ private:
         pauseMenu_->labelcolor(UiTheme::kText);
         pauseMenu_->labelfont(UiTheme::kUiFont);
         pauseMenu_->labelsize(12);
+        pauseMenu_->clear_visible_focus();
         pauseMenu_->add("1 hour", 0, pauseOneHourCallback, this);
         pauseMenu_->add("3 hours", 0, pauseThreeHoursCallback, this);
         pauseMenu_->add("5 hours", 0, pauseFiveHoursCallback, this);

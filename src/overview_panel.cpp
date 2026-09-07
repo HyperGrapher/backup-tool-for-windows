@@ -1,13 +1,16 @@
 #include "overview_panel.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 #include <optional>
 #include <string>
 
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Browser.H>
+#include <FL/fl_ask.H>
 
+#include "clear_history_button.hpp"
 #include "connected_volume.hpp"
 #include "projects_scanner.hpp"
 #include "state_store.hpp"
@@ -49,7 +52,7 @@ Fl_Box* addStatusRow(int x, int y, int width, const char* title) {
 
 OverviewPanel::OverviewPanel(int x, int y, int width, int height, const BackupConfig& config,
                              const std::vector<ConfiguredProjectsSource>& projectsSources,
-                             const StateStore& stateStore)
+                             StateStore& stateStore)
     : Fl_Group(x, y, width, height), config_(config), projectsSources_(projectsSources),
       stateStore_(stateStore) {
     box(FL_FLAT_BOX);
@@ -69,8 +72,10 @@ OverviewPanel::OverviewPanel(int x, int y, int width, int height, const BackupCo
     lastBackup_ = addStatusRow(rowX, y + 170, rowWidth, "Last successful backup");
     lastArchive_ = addStatusRow(rowX, y + 204, rowWidth, "Last Zipped backup");
 
-    addLabel(x + 16, y + 252, width - 32, 24, "Failures requiring attention", 13, UiTheme::kText,
+    addLabel(x + 16, y + 252, width - 68, 24, "Failures requiring attention", 13, UiTheme::kText,
              UiTheme::kUiFontSemibold);
+    clearFailuresButton_ = new ClearHistoryButton(x + width - 44, y + 250, 28, "Clear failures");
+    clearFailuresButton_->callback(clearFailuresCallback, this);
     addLabel(x + 20, y + 278, 150, 22, "Time", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
     addLabel(x + 170, y + 278, width - 190, 22, "Details", 11, UiTheme::kSecondaryText,
@@ -148,14 +153,32 @@ void OverviewPanel::refresh() {
     watcherStatus_->labelcolor(UiTheme::kSafe);
 
     recentFailures_->clear();
+    std::size_t failureCount = 0;
     for (const ActivityRecord& record : stateStore_.recentActivity(50)) {
         if (record.severity == "error") {
             const std::string line = record.occurredUtc + '\t' + record.message;
             recentFailures_->add(line.c_str());
+            ++failureCount;
         }
     }
-    if (recentFailures_->size() == 0) {
+    if (failureCount == 0) {
         recentFailures_->add("No recent failures.");
+        clearFailuresButton_->deactivate();
+    } else {
+        clearFailuresButton_->activate();
     }
     redraw();
+}
+
+void OverviewPanel::clearFailuresCallback(Fl_Widget*, void* context) {
+    static_cast<OverviewPanel*>(context)->clearFailures();
+}
+
+void OverviewPanel::clearFailures() {
+    try {
+        stateStore_.clearFailures();
+        refresh();
+    } catch (const std::exception& error) {
+        fl_alert("%s", error.what());
+    }
 }

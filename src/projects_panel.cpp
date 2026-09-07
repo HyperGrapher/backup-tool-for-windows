@@ -40,6 +40,7 @@ void styleButton(Fl_Button& button, bool isPrimary = false, bool isDanger = fals
     button.labelcolor(UiTheme::kText);
     button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
+    button.clear_visible_focus();
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
@@ -108,7 +109,7 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     addLabel(x + 20, y + 108, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
     addLabel(x + 148, y + 108, 86, 22, "Backup", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
-    addLabel(x + 238, y + 108, 370, 22, "Root folder", 11, UiTheme::kSecondaryText,
+    addLabel(x + 238, y + 108, 370, 22, "Root folder / watched project", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
     addLabel(x + 618, y + 108, 86, 22, "Projects", 11, UiTheme::kSecondaryText,
              UiTheme::kUiFontSemibold);
@@ -134,16 +135,35 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
 void ProjectsPanel::refresh() {
     discovery_ = discoverConfiguredProjects(config_.projectsRoots);
     rootBrowser_->clear();
+    rootIdByRow_.clear();
     for (const ProjectsRoot& root : config_.projectsRoots) {
-        const auto optedIn = std::ranges::count_if(discovery_.sources, [&](const ConfiguredProjectsSource& source) {
-            return source.rootId == root.id;
+        std::vector<const ConfiguredProjectsSource*> watchedProjects;
+        for (const ConfiguredProjectsSource& source : discovery_.sources) {
+            if (source.rootId == root.id) {
+                watchedProjects.push_back(&source);
+            }
+        }
+        std::ranges::sort(watchedProjects, {}, [](const ConfiguredProjectsSource* source) {
+            return source->source.path.native();
         });
         const std::string modeText = root.backupMode == BackupMode::mirror ? "Mirror" : "Zipped";
         const std::string line = std::string{UiTheme::statusText(rootStatus(root, discovery_, config_, stateStore_))} +
                                  '\t' + modeText + '\t' + pathToUtf8(root.path) + '\t' +
-                                 std::to_string(optedIn) + '\t' +
+                                 std::to_string(watchedProjects.size()) + '\t' +
                                  std::to_string(config_.destinations.size());
         rootBrowser_->add(line.c_str());
+        rootIdByRow_.push_back(root.id);
+
+        for (const ConfiguredProjectsSource* project : watchedProjects) {
+            std::error_code relativeError;
+            const std::filesystem::path relativePath =
+                std::filesystem::relative(project->source.path, root.path, relativeError);
+            const std::filesystem::path displayPath = relativeError ? project->source.path : relativePath;
+            const std::string projectLine = "\t\t    > " + pathToUtf8(displayPath) +
+                                            "\tWatched\t" + std::to_string(config_.destinations.size());
+            rootBrowser_->add(projectLine.c_str());
+            rootIdByRow_.emplace_back();
+        }
     }
     const std::string summary = std::to_string(config_.projectsRoots.size()) + " Roots, " +
                                 std::to_string(discovery_.sources.size()) + " opted-in Projects";
@@ -188,8 +208,9 @@ void ProjectsPanel::addRoots() {
 std::vector<std::string> ProjectsPanel::selectedRootIds() const {
     std::vector<std::string> ids;
     for (int line = 1; line <= rootBrowser_->size(); ++line) {
-        if (rootBrowser_->selected(line) != 0) {
-            ids.push_back(config_.projectsRoots.at(static_cast<std::size_t>(line - 1)).id);
+        const std::string& rootId = rootIdByRow_.at(static_cast<std::size_t>(line - 1));
+        if (rootBrowser_->selected(line) != 0 && !rootId.empty()) {
+            ids.push_back(rootId);
         }
     }
     return ids;
@@ -215,6 +236,11 @@ void ProjectsPanel::removeSelectedRoots() {
 }
 
 void ProjectsPanel::refreshSelectionState() {
+    for (int line = 1; line <= rootBrowser_->size(); ++line) {
+        if (rootIdByRow_.at(static_cast<std::size_t>(line - 1)).empty()) {
+            rootBrowser_->select(line, 0);
+        }
+    }
     const bool hasSelection = !selectedRootIds().empty();
     hasSelection ? removeButton_->activate() : removeButton_->deactivate();
 }

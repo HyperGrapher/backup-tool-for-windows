@@ -51,6 +51,7 @@ add_library(back_it_up_tool_core STATIC
     src/settings_panel.cpp
     src/sources_panel.cpp
     src/source_watcher.cpp
+    src/startup_registration.cpp
     src/state_store.cpp
     src/size_approval_dialog.cpp
     src/window_theme.cpp

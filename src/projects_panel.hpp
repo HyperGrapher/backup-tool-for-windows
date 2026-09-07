@@ -32,6 +32,7 @@ private:
     Fl_Multi_Browser* rootBrowser_{};
     Fl_Box* resultSummary_{};
     ConfiguredProjectsDiscovery discovery_;
+    std::vector<std::string> rootIdByRow_;
 
     static void addRootsCallback(Fl_Widget*, void* context);
     static void removeCallback(Fl_Widget*, void* context);

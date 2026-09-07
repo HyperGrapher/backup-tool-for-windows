@@ -464,6 +464,14 @@ std::vector<ActivityRecord> StateStore::recentActivity(std::size_t limit) const 
     }
 }
 
+void StateStore::clearActivity() {
+    execute("DELETE FROM activity_history;");
+}
+
+void StateStore::clearFailures() {
+    execute("DELETE FROM activity_history WHERE severity = 'error';");
+}
+
 std::optional<ProjectBackupDecision> StateStore::projectBackupDecision(std::string_view projectId) const {
     requireIdentifier(projectId, "Project ID");
     auto statement = prepare(database_.get(),

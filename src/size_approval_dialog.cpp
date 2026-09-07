@@ -36,6 +36,7 @@ void styleButton(Fl_Button& button, Fl_Color color, Fl_Color pressedColor,
     button.labelcolor(labelColor);
     button.labelfont(UiTheme::kUiFont);
     button.labelsize(12);
+    button.clear_visible_focus();
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
@@ -90,9 +91,8 @@ SizeApprovalResult SizeApprovalDialog::show() {
     window.end();
     window_ = &window;
     window.set_modal();
-    window.show();
+    showWithDarkWindowChrome(window);
     const HWND nativeWindow = fl_xid(&window);
-    applyDarkWindowChrome(nativeWindow);
     SetWindowPos(nativeWindow, HWND_TOPMOST, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     SetForegroundWindow(nativeWindow);

@@ -1,5 +1,6 @@
 #include "state_store.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -66,6 +67,37 @@ TEST_CASE("recent activity is returned newest first and respects the limit") {
     REQUIRE(records.front().message == "Second");
     REQUIRE(records.front().sourceId == "source-one");
     REQUIRE(records.front().destinationId == "destination-one");
+}
+
+TEST_CASE("activity history can be cleared without changing route state") {
+    TemporaryDirectory directory;
+    StateStore store{directory.path() / "state.db"};
+    store.appendActivity("2026-08-10T16:00:00Z", "info", "Completed");
+    store.appendActivity("2026-08-10T16:01:00Z", "error", "Failed");
+    store.markRouteDirty("source-one", "destination-one");
+
+    store.clearActivity();
+
+    REQUIRE(store.recentActivity(10).empty());
+    const auto routeState = store.routeState("source-one", "destination-one");
+    REQUIRE(routeState.has_value());
+    REQUIRE(routeState->isDirty);
+}
+
+TEST_CASE("failures can be cleared while retaining other activity") {
+    TemporaryDirectory directory;
+    StateStore store{directory.path() / "state.db"};
+    store.appendActivity("2026-08-10T16:00:00Z", "info", "Completed");
+    store.appendActivity("2026-08-10T16:01:00Z", "error", "Failed");
+    store.appendActivity("2026-08-10T16:02:00Z", "warning", "Waiting");
+
+    store.clearFailures();
+
+    const auto records = store.recentActivity(10);
+    REQUIRE(records.size() == 2);
+    REQUIRE(std::ranges::none_of(records, [](const ActivityRecord& record) {
+        return record.severity == "error";
+    }));
 }
 
 TEST_CASE("a change during a running mirror remains pending after success") {

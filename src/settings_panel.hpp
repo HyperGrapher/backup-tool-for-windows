@@ -10,6 +10,7 @@
 class ConfigStore;
 class Fl_Box;
 class Fl_Button;
+class Fl_Check_Button;
 class Fl_Int_Input;
 
 class SettingsPanel final : public Fl_Group {
@@ -25,6 +26,7 @@ private:
     std::function<void()> configChangedCallback_;
     Fl_Int_Input* debounceInput_{};
     Fl_Int_Input* largeFileInput_{};
+    Fl_Check_Button* launchAtStartupCheckbox_{};
     Fl_Button* saveButton_{};
     Fl_Box* resultSummary_{};
 

@@ -1,5 +1,6 @@
 #include "activity_panel.hpp"
 
+#include <exception>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -7,8 +8,10 @@
 
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Browser.H>
+#include <FL/fl_ask.H>
 
 #include "backup_config.hpp"
+#include "clear_history_button.hpp"
 #include "projects_scanner.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
@@ -79,13 +82,15 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
 }  // namespace
 
 ActivityPanel::ActivityPanel(int x, int y, int width, int height, const BackupConfig& config,
-                             const StateStore& stateStore)
+                             StateStore& stateStore)
     : Fl_Group(x, y, width, height), config_(config), stateStore_(stateStore) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 16, y + 10, width - 32, 28, "Activity", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
+    addLabel(x + 16, y + 10, width - 68, 28, "Activity", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
+    clearActivityButton_ = new ClearHistoryButton(x + width - 44, y + 10, 28, "Clear activity history");
+    clearActivityButton_->callback(clearActivityCallback, this);
     addLabel(x + 16, y + 36, width - 32, 20,
              "Mirror, Zipped backup, and failure history. Newest events appear first.", 11,
              UiTheme::kSecondaryText);
@@ -128,8 +133,24 @@ void ActivityPanel::refresh() {
     }
     if (records.empty()) {
         activityBrowser_->add("—\tNo activity yet\t—\t—\tBackups will appear here after they run.");
+        clearActivityButton_->deactivate();
+    } else {
+        clearActivityButton_->activate();
     }
     const std::string summary = std::to_string(records.size()) + " recent events";
     resultSummary_->copy_label(summary.c_str());
     redraw();
+}
+
+void ActivityPanel::clearActivityCallback(Fl_Widget*, void* context) {
+    static_cast<ActivityPanel*>(context)->clearActivity();
+}
+
+void ActivityPanel::clearActivity() {
+    try {
+        stateStore_.clearActivity();
+        refresh();
+    } catch (const std::exception& error) {
+        fl_alert("%s", error.what());
+    }
 }

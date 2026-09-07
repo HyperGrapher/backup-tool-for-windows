@@ -7,10 +7,12 @@
 
 #include <FL/Fl_Box.H>
 #include <FL/Fl_Button.H>
+#include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Int_Input.H>
 #include <FL/fl_ask.H>
 
 #include "config_store.hpp"
+#include "startup_registration.hpp"
 #include "ui_theme.hpp"
 
 namespace {
@@ -52,6 +54,7 @@ void styleButton(Fl_Button& button) {
     button.labelcolor(UiTheme::kText);
     button.labelfont(UiTheme::kUiFontSemibold);
     button.labelsize(12);
+    button.clear_visible_focus();
 }
 
 [[nodiscard]] int positiveInt(const char* text, const char* fieldName) {
@@ -102,7 +105,19 @@ SettingsPanel::SettingsPanel(int x, int y, int width, int height, BackupConfig& 
     styleInput(*largeFileInput_);
     addLabel(x + 348, y + 236, 120, 28, "MiB per file", 11, UiTheme::kSecondaryText);
 
-    saveButton_ = new Fl_Button(x + 250, y + 286, 112, 30, "Save settings");
+    addLabel(x + 16, y + 286, width - 32, 22, "Windows startup", 13, UiTheme::kText,
+             UiTheme::kUiFontSemibold);
+    addDivider(x + 16, y + 312, width - 32);
+    launchAtStartupCheckbox_ = new Fl_Check_Button(
+        x + 16, y + 324, width - 32, 30, "Launch BackItUp Tool when Windows starts");
+    launchAtStartupCheckbox_->color(UiTheme::kBackground);
+    launchAtStartupCheckbox_->selection_color(UiTheme::kPrimary);
+    launchAtStartupCheckbox_->labelcolor(UiTheme::kText);
+    launchAtStartupCheckbox_->labelfont(UiTheme::kUiFont);
+    launchAtStartupCheckbox_->labelsize(12);
+    launchAtStartupCheckbox_->clear_visible_focus();
+
+    saveButton_ = new Fl_Button(x + 250, y + 372, 112, 30, "Save settings");
     styleButton(*saveButton_);
     saveButton_->callback(saveCallback, this);
 
@@ -117,6 +132,14 @@ void SettingsPanel::refresh() {
     const std::string largeFile = std::to_string(config_.settings.largeFileThresholdBytes / kBytesPerMiB);
     debounceInput_->value(debounce.c_str());
     largeFileInput_->value(largeFile.c_str());
+    try {
+        launchAtStartupCheckbox_->value(isLaunchAtStartupEnabled() ? 1 : 0);
+    } catch (const std::exception& error) {
+        launchAtStartupCheckbox_->value(0);
+        resultSummary_->copy_label(error.what());
+        redraw();
+        return;
+    }
     resultSummary_->copy_label("Changes are saved in config.json and applied immediately.");
     redraw();
 }
@@ -131,7 +154,18 @@ void SettingsPanel::save() {
         updated.settings.debounceSeconds = positiveInt(debounceInput_->value(), "Settle delay");
         updated.settings.largeFileThresholdBytes =
             static_cast<std::uint64_t>(positiveInt(largeFileInput_->value(), "Large file warning")) * kBytesPerMiB;
-        configStore_.save(updated);
+        const bool wasLaunchAtStartupEnabled = isLaunchAtStartupEnabled();
+        const bool shouldLaunchAtStartup = launchAtStartupCheckbox_->value() != 0;
+        setLaunchAtStartupEnabled(shouldLaunchAtStartup);
+        try {
+            configStore_.save(updated);
+        } catch (...) {
+            try {
+                setLaunchAtStartupEnabled(wasLaunchAtStartupEnabled);
+            } catch (const std::exception&) {
+            }
+            throw;
+        }
         config_ = std::move(updated);
         configChangedCallback_();
         resultSummary_->copy_label("Settings saved.");

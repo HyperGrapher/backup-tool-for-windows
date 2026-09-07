@@ -66,6 +66,7 @@ void styleButton(Fl_Button& button, bool isPrimary = false, bool isDanger = fals
     button.labelcolor(UiTheme::kText);
     button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
+    button.clear_visible_focus();
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,

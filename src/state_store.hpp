@@ -88,6 +88,8 @@ public:
                         std::optional<std::string_view> sourceId = std::nullopt,
                         std::optional<std::string_view> destinationId = std::nullopt);
     [[nodiscard]] std::vector<ActivityRecord> recentActivity(std::size_t limit) const;
+    void clearActivity();
+    void clearFailures();
 
     [[nodiscard]] std::optional<ProjectBackupDecision> projectBackupDecision(std::string_view projectId) const;
     void setProjectBackupDecision(std::string_view projectId, ProjectBackupDecision decision,

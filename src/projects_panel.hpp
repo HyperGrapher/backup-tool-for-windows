@@ -28,19 +28,24 @@ private:
     const ConfigStore& configStore_;
     const StateStore& stateStore_;
     std::function<void()> configChangedCallback_;
+    Fl_Button* watchButton_{};
     Fl_Button* removeButton_{};
     Fl_Multi_Browser* rootBrowser_{};
     Fl_Box* resultSummary_{};
     ConfiguredProjectsDiscovery discovery_;
     std::vector<std::string> rootIdByRow_;
+    std::vector<std::filesystem::path> eligibleFolderByRow_;
 
     static void addRootsCallback(Fl_Widget*, void* context);
+    static void watchCallback(Fl_Widget*, void* context);
     static void removeCallback(Fl_Widget*, void* context);
     static void selectionCallback(Fl_Widget*, void* context);
 
     void addRoots();
+    void watchSelectedFolders();
     void removeSelectedRoots();
     [[nodiscard]] std::vector<std::string> selectedRootIds() const;
+    [[nodiscard]] std::vector<std::filesystem::path> selectedEligibleFolders() const;
     void refreshSelectionState();
     void reportError(const std::exception& error) const;
 };

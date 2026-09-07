@@ -40,6 +40,7 @@ add_library(back_it_up_tool_core STATIC
     src/activity_panel.cpp
     src/backup_config.cpp
     src/backup_engine.cpp
+    src/backup_notification.cpp
     src/config_store.cpp
     src/connected_volume.cpp
     src/destinations_panel.cpp

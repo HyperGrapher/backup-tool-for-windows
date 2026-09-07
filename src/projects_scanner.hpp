@@ -25,6 +25,7 @@ struct ProjectDiscoveryProblem {
 
 struct ProjectsDiscovery {
     std::vector<ProjectsSource> sources;
+    std::vector<std::filesystem::path> eligibleFolders;
     std::vector<ProjectDiscoveryProblem> problems;
 };
 
@@ -37,6 +38,13 @@ struct ConfiguredProjectsSource {
 
 struct ConfiguredProjectsDiscovery {
     std::vector<ConfiguredProjectsSource> sources;
+    struct EligibleFolder {
+        std::string rootId;
+        std::filesystem::path path;
+
+        bool operator==(const EligibleFolder&) const = default;
+    };
+    std::vector<EligibleFolder> eligibleFolders;
     std::vector<ProjectDiscoveryProblem> problems;
 };
 
@@ -88,6 +96,7 @@ private:
 [[nodiscard]] ProjectsDiscovery discoverProjects(const ProjectsRoot& root);
 [[nodiscard]] ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<ProjectsRoot>& roots);
 [[nodiscard]] bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath);
+void createProjectWatchMarker(const std::filesystem::path& projectFolder);
 [[nodiscard]] ProjectContents collectProjectContents(
     const ProjectsSource& source, std::optional<std::uint64_t> maximumFileSizeBytes = std::nullopt);
 [[nodiscard]] ProjectPreflight scanProject(const ProjectsSource& source, const BackupSettings& settings);

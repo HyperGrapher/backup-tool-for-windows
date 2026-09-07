@@ -40,6 +40,7 @@
 #include "activity_panel.hpp"
 #include "config_store.hpp"
 #include "backup_engine.hpp"
+#include "backup_notification.hpp"
 #include "destinations_panel.hpp"
 #include "overview_panel.hpp"
 #include "projects_panel.hpp"
@@ -457,6 +458,7 @@ private:
     Fl_Button* runNowButton_{};
     Fl_Menu_Button* pauseMenu_{};
     BackupEngine backupEngine_;
+    BackupNotification backupNotification_;
     SourceWatcher sourceWatcher_;
     std::vector<ConfiguredProjectsSource> projectsSources_;
     std::thread backupThread_;
@@ -915,6 +917,7 @@ private:
             isBackupRunning_ = true;
             runNowButton_->deactivate();
             footerStatus_->copy_label("Checking pending backups...");
+            backupNotification_.show("Checking pending backup work...");
             const BackupConfig configSnapshot = config_;
             const std::vector<ConfiguredProjectsSource> projectsSourcesSnapshot = projectsSources_;
             backupThread_ = std::thread([this, configSnapshot, projectsSourcesSnapshot] {
@@ -940,6 +943,7 @@ private:
                 Fl::awake(backupPreparedAwake, this);
             });
         } catch (const std::exception& error) {
+            backupNotification_.hide();
             footerStatus_->copy_label(error.what());
             reportError(error);
         }
@@ -958,6 +962,7 @@ private:
         if (preparation.error.has_value()) {
             isBackupRunning_ = false;
             runNowButton_->activate();
+            backupNotification_.hide();
             footerStatus_->copy_label(preparation.error->c_str());
             reportError(std::runtime_error(*preparation.error));
             return;
@@ -975,6 +980,7 @@ private:
         if (preparation.mirrorPlans.empty() && preparation.archivePlans.empty()) {
             isBackupRunning_ = false;
             runNowButton_->activate();
+            backupNotification_.hide();
             const bool shouldCheckAgain = consumeDeferredRefreshes();
             if (hasPendingBackupWork()) {
                 footerStatus_->copy_label("Backup is pending. Waiting for a Source or Destination.");
@@ -991,6 +997,7 @@ private:
                                    " Mirrors and " + std::to_string(preparation.archivePlans.size()) +
                                    " Zipped backups...";
         footerStatus_->copy_label(status.c_str());
+        backupNotification_.show(status);
         updateGlobalStatus();
         backupThread_ = std::thread([this, preparation = std::move(preparation)] {
             BackupRunSummary result;
@@ -1027,6 +1034,7 @@ private:
         }
         isBackupRunning_ = false;
         runNowButton_->activate();
+        backupNotification_.hide();
         const bool shouldCheckAgain = consumeDeferredRefreshes();
         const std::string status = "Backup finished: " + std::to_string(result.succeeded) + " succeeded, " +
                                    std::to_string(result.failed) + " failed.";

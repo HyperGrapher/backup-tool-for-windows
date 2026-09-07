@@ -108,6 +108,20 @@ constexpr wchar_t kIgnoreFileName[] = L".backup-ignore";
     return true;
 }
 
+[[nodiscard]] bool isStrictAncestorOf(const std::filesystem::path& ancestor,
+                                      const std::filesystem::path& descendant) {
+    auto ancestorComponent = ancestor.begin();
+    auto descendantComponent = descendant.begin();
+    while (ancestorComponent != ancestor.end() && descendantComponent != descendant.end()) {
+        if (!equalsIgnoreCase(ancestorComponent->native(), descendantComponent->native())) {
+            return false;
+        }
+        ++ancestorComponent;
+        ++descendantComponent;
+    }
+    return ancestorComponent == ancestor.end() && descendantComponent != descendant.end();
+}
+
 [[nodiscard]] bool isAlwaysExcludedDirectory(std::wstring_view name) {
     return equalsIgnoreCase(name, L"build") || equalsIgnoreCase(name, L"node_modules") ||
            equalsIgnoreCase(name, L".git");
@@ -199,10 +213,10 @@ ProjectChangeFilter::~ProjectChangeFilter() = default;
 bool ProjectChangeFilter::operator()(const std::filesystem::path& relativePath) {
     implementation_->refreshIgnoreRules();
     const std::filesystem::path filename = relativePath.filename();
-    if (equalsIgnoreCase(filename.native(), kIgnoreFileName) || equalsIgnoreCase(filename.native(), L".git")) {
+    if (equalsIgnoreCase(filename.native(), kIgnoreFileName)) {
         return true;
     }
-    if (equalsIgnoreCase(filename.native(), kMarkerName)) {
+    if (equalsIgnoreCase(filename.native(), kMarkerName) || equalsIgnoreCase(filename.native(), L".git")) {
         return false;
     }
 
@@ -269,6 +283,7 @@ ProjectsDiscovery discoverProjects(const ProjectsRoot& root) {
             continue;
         }
         if (!markerExists) {
+            discovery.eligibleFolders.push_back(entry.path());
             continue;
         }
         if (!std::filesystem::is_regular_file(markerPath, markerError) || markerError) {
@@ -290,6 +305,11 @@ ProjectsDiscovery discoverProjects(const ProjectsRoot& root) {
     if (iterationError) {
         throw std::runtime_error("Unable to enumerate Projects Root.");
     }
+    std::erase_if(discovery.eligibleFolders, [&](const std::filesystem::path& folder) {
+        return std::ranges::any_of(discovery.sources, [&](const ProjectsSource& source) {
+            return isStrictAncestorOf(folder, source.path);
+        });
+    });
     return discovery;
 }
 
@@ -309,6 +329,10 @@ ConfiguredProjectsDiscovery discoverConfiguredProjects(const std::vector<Project
                 }
                 combined.sources.push_back(ConfiguredProjectsSource{root.id, std::move(source)});
             }
+            for (std::filesystem::path& eligibleFolder : discovery.eligibleFolders) {
+                combined.eligibleFolders.push_back(
+                    ConfiguredProjectsDiscovery::EligibleFolder{root.id, std::move(eligibleFolder)});
+            }
         } catch (const std::exception& error) {
             combined.problems.push_back({root.path, error.what()});
         }
@@ -322,6 +346,50 @@ bool isProjectsRootDiscoveryChange(const std::filesystem::path& relativePath) {
         return static_cast<wchar_t>(std::towlower(character));
     });
     return filename == L".backup-watch" || filename == L".git";
+}
+
+void createProjectWatchMarker(const std::filesystem::path& projectFolder) {
+    if (!std::filesystem::is_directory(projectFolder)) {
+        throw std::invalid_argument("The selected Project folder is unavailable or is not a directory.");
+    }
+    if (containsGitMarker(projectFolder)) {
+        throw std::invalid_argument("A Git repository cannot be added as a watched Project folder.");
+    }
+
+    const std::filesystem::path markerPath = projectFolder / kMarkerName;
+    std::error_code markerError;
+    if (std::filesystem::exists(markerPath, markerError)) {
+        throw std::invalid_argument("The selected Project folder is already watched.");
+    }
+    if (markerError) {
+        throw std::runtime_error("Unable to inspect the selected Project folder.");
+    }
+
+    const std::string id = generateUuid();
+    const std::wstring wideId{id.begin(), id.end()};
+    std::filesystem::path temporaryPath = markerPath;
+    temporaryPath += L"." + wideId + L".tmp";
+    {
+        std::ofstream output{temporaryPath, std::ios::binary | std::ios::trunc};
+        if (!output) {
+            throw std::runtime_error("Unable to create the temporary .backup-watch file.");
+        }
+        output << id << '\n';
+        output.flush();
+        if (!output) {
+            std::error_code ignoredError;
+            std::filesystem::remove(temporaryPath, ignoredError);
+            throw std::runtime_error("Unable to write the .backup-watch UUID.");
+        }
+    }
+
+    if (MoveFileExW(temporaryPath.c_str(), markerPath.c_str(), MOVEFILE_WRITE_THROUGH) == FALSE) {
+        const DWORD error = GetLastError();
+        std::error_code ignoredError;
+        std::filesystem::remove(temporaryPath, ignoredError);
+        throw std::runtime_error("Unable to create .backup-watch. Windows error " +
+                                 std::to_string(error) + '.');
+    }
 }
 
 ProjectContents collectProjectContents(const ProjectsSource& source,

@@ -1,5 +1,6 @@
 #include "projects_scanner.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -67,6 +68,43 @@ TEST_CASE("Projects discovery finds opted-in folders at any depth") {
     REQUIRE(discovery.problems.empty());
     REQUIRE(discovery.sources.size() == 1);
     REQUIRE(discovery.sources.front().path == directory.path() / "desktop-apps" / "backup-tool");
+}
+
+TEST_CASE("Projects discovery lists unwatched folders that can be opted in") {
+    TemporaryDirectory directory;
+    directory.write("Candidate/notes.txt", "eligible");
+    directory.write("Container/Watched/.backup-watch", "01234567-89ab-4def-8123-456789abcdef");
+    directory.write("Generated/build/output.txt", "excluded");
+    directory.write("Repository/.git/HEAD", "excluded");
+
+    ProjectsDiscovery discovery = discoverProjects(ProjectsRoot{"projects-root", directory.path()});
+
+    REQUIRE(std::ranges::any_of(discovery.eligibleFolders, [&](const std::filesystem::path& path) {
+        return path == directory.path() / "Candidate";
+    }));
+    REQUIRE(std::ranges::none_of(discovery.eligibleFolders, [&](const std::filesystem::path& path) {
+        return path.filename() == "build" || path.filename() == "Repository" || path.filename() == "Container";
+    }));
+
+    createProjectWatchMarker(directory.path() / "Candidate");
+    discovery = discoverProjects(ProjectsRoot{"projects-root", directory.path()});
+    REQUIRE(discovery.sources.size() == 2);
+    REQUIRE(std::ranges::any_of(discovery.sources, [&](const ProjectsSource& source) {
+        return source.path == directory.path() / "Candidate";
+    }));
+    REQUIRE(std::filesystem::is_regular_file(directory.path() / "Candidate" / ".backup-watch"));
+}
+
+TEST_CASE("Project change filtering ignores Git metadata") {
+    TemporaryDirectory directory;
+    directory.write("Project/.backup-ignore", "");
+    ProjectChangeFilter filter{directory.path() / "Project"};
+
+    REQUIRE_FALSE(filter(".git"));
+    REQUIRE_FALSE(filter(std::filesystem::path{".git"} / "index"));
+    REQUIRE_FALSE(filter(std::filesystem::path{"Code"} / ".git"));
+    REQUIRE_FALSE(filter(std::filesystem::path{"Code"} / ".git" / "index.lock"));
+    REQUIRE(filter("notes.txt"));
 }
 
 TEST_CASE("Projects discovery reports invalid and duplicate marker UUIDs") {

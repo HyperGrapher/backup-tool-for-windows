@@ -100,9 +100,12 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
              11, UiTheme::kSecondaryText);
 
     auto* addButton = new Fl_Button(x + 16, y + 66, 112, 30, "Add roots");
-    styleButton(*addButton, true);
+    styleButton(*addButton);
     addButton->callback(addRootsCallback, this);
-    removeButton_ = new Fl_Button(x + 136, y + 66, 132, 30, "Remove selected");
+    watchButton_ = new Fl_Button(x + 136, y + 66, 132, 30, "Watch selected");
+    styleButton(*watchButton_, true);
+    watchButton_->callback(watchCallback, this);
+    removeButton_ = new Fl_Button(x + 276, y + 66, 132, 30, "Remove selected");
     styleButton(*removeButton_, false, true);
     removeButton_->callback(removeCallback, this);
 
@@ -136,6 +139,7 @@ void ProjectsPanel::refresh() {
     discovery_ = discoverConfiguredProjects(config_.projectsRoots);
     rootBrowser_->clear();
     rootIdByRow_.clear();
+    eligibleFolderByRow_.clear();
     for (const ProjectsRoot& root : config_.projectsRoots) {
         std::vector<const ConfiguredProjectsSource*> watchedProjects;
         for (const ConfiguredProjectsSource& source : discovery_.sources) {
@@ -146,6 +150,15 @@ void ProjectsPanel::refresh() {
         std::ranges::sort(watchedProjects, {}, [](const ConfiguredProjectsSource* source) {
             return source->source.path.native();
         });
+        std::vector<const ConfiguredProjectsDiscovery::EligibleFolder*> eligibleFolders;
+        for (const ConfiguredProjectsDiscovery::EligibleFolder& folder : discovery_.eligibleFolders) {
+            if (folder.rootId == root.id) {
+                eligibleFolders.push_back(&folder);
+            }
+        }
+        std::ranges::sort(eligibleFolders, {}, [](const ConfiguredProjectsDiscovery::EligibleFolder* folder) {
+            return folder->path.native();
+        });
         const std::string modeText = root.backupMode == BackupMode::mirror ? "Mirror" : "Zipped";
         const std::string line = std::string{UiTheme::statusText(rootStatus(root, discovery_, config_, stateStore_))} +
                                  '\t' + modeText + '\t' + pathToUtf8(root.path) + '\t' +
@@ -153,6 +166,7 @@ void ProjectsPanel::refresh() {
                                  std::to_string(config_.destinations.size());
         rootBrowser_->add(line.c_str());
         rootIdByRow_.push_back(root.id);
+        eligibleFolderByRow_.emplace_back();
 
         for (const ConfiguredProjectsSource* project : watchedProjects) {
             std::error_code relativeError;
@@ -163,16 +177,31 @@ void ProjectsPanel::refresh() {
                                             "\tWatched\t" + std::to_string(config_.destinations.size());
             rootBrowser_->add(projectLine.c_str());
             rootIdByRow_.emplace_back();
+            eligibleFolderByRow_.emplace_back();
+        }
+
+        for (const ConfiguredProjectsDiscovery::EligibleFolder* folder : eligibleFolders) {
+            std::error_code relativeError;
+            const std::filesystem::path relativePath =
+                std::filesystem::relative(folder->path, root.path, relativeError);
+            const std::filesystem::path displayPath = relativeError ? folder->path : relativePath;
+            const std::string folderLine = "\t\t    + " + pathToUtf8(displayPath) +
+                                           "\tEligible\t" + std::to_string(config_.destinations.size());
+            rootBrowser_->add(folderLine.c_str());
+            rootIdByRow_.emplace_back();
+            eligibleFolderByRow_.push_back(folder->path);
         }
     }
     const std::string summary = std::to_string(config_.projectsRoots.size()) + " Roots, " +
-                                std::to_string(discovery_.sources.size()) + " opted-in Projects";
+                                std::to_string(discovery_.sources.size()) + " watched Projects, " +
+                                std::to_string(discovery_.eligibleFolders.size()) + " eligible folders";
     resultSummary_->copy_label(summary.c_str());
     refreshSelectionState();
     redraw();
 }
 
 void ProjectsPanel::addRootsCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->addRoots(); }
+void ProjectsPanel::watchCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->watchSelectedFolders(); }
 void ProjectsPanel::removeCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->removeSelectedRoots(); }
 void ProjectsPanel::selectionCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->refreshSelectionState(); }
 
@@ -216,6 +245,48 @@ std::vector<std::string> ProjectsPanel::selectedRootIds() const {
     return ids;
 }
 
+std::vector<std::filesystem::path> ProjectsPanel::selectedEligibleFolders() const {
+    std::vector<std::filesystem::path> folders;
+    for (int line = 1; line <= rootBrowser_->size(); ++line) {
+        const std::filesystem::path& folder = eligibleFolderByRow_.at(static_cast<std::size_t>(line - 1));
+        if (rootBrowser_->selected(line) != 0 && !folder.empty()) {
+            folders.push_back(folder);
+        }
+    }
+    return folders;
+}
+
+void ProjectsPanel::watchSelectedFolders() {
+    const std::vector<std::filesystem::path> folders = selectedEligibleFolders();
+    if (folders.empty()) {
+        return;
+    }
+
+    std::string firstError;
+    std::size_t createdCount = 0;
+    for (const std::filesystem::path& folder : folders) {
+        try {
+            createProjectWatchMarker(folder);
+            ++createdCount;
+        } catch (const std::exception& error) {
+            if (firstError.empty()) {
+                firstError = error.what();
+            }
+        }
+    }
+    if (createdCount > 0) {
+        try {
+            configChangedCallback_();
+        } catch (const std::exception& error) {
+            reportError(error);
+            return;
+        }
+    }
+    if (!firstError.empty()) {
+        fl_alert("%s", firstError.c_str());
+    }
+}
+
 void ProjectsPanel::removeSelectedRoots() {
     const std::vector<std::string> ids = selectedRootIds();
     if (ids.empty() || fl_choice("Remove the selected Project Roots? Existing backups stay untouched.", "Cancel",
@@ -237,12 +308,15 @@ void ProjectsPanel::removeSelectedRoots() {
 
 void ProjectsPanel::refreshSelectionState() {
     for (int line = 1; line <= rootBrowser_->size(); ++line) {
-        if (rootIdByRow_.at(static_cast<std::size_t>(line - 1)).empty()) {
+        const std::size_t index = static_cast<std::size_t>(line - 1);
+        if (rootIdByRow_.at(index).empty() && eligibleFolderByRow_.at(index).empty()) {
             rootBrowser_->select(line, 0);
         }
     }
-    const bool hasSelection = !selectedRootIds().empty();
-    hasSelection ? removeButton_->activate() : removeButton_->deactivate();
+    const bool hasSelectedRoots = !selectedRootIds().empty();
+    const bool hasSelectedEligibleFolders = !selectedEligibleFolders().empty();
+    hasSelectedRoots ? removeButton_->activate() : removeButton_->deactivate();
+    hasSelectedEligibleFolders ? watchButton_->activate() : watchButton_->deactivate();
 }
 
 void ProjectsPanel::reportError(const std::exception& error) const { fl_alert("%s", error.what()); }

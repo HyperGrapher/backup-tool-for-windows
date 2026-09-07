@@ -4,8 +4,10 @@
 
 struct BackupConfig;
 class Fl_Box;
-class Fl_Browser;
-class ClearHistoryButton;
+class DataTable;
+class Fl_Choice;
+class Fl_Input;
+class Fl_Button;
 class StateStore;
 
 class ActivityPanel final : public Fl_Group {
@@ -18,10 +20,12 @@ public:
 private:
     const BackupConfig& config_;
     StateStore& stateStore_;
-    Fl_Browser* activityBrowser_{};
+    DataTable* activityBrowser_{};
     Fl_Box* resultSummary_{};
-    ClearHistoryButton* clearActivityButton_{};
+    Fl_Button* clearActivityButton_{};
 
+    Fl_Choice* filterChoice_{};
+    Fl_Input* searchInput_{};
     static void clearActivityCallback(Fl_Widget*, void* context);
     void clearActivity();
 };

@@ -8,6 +8,7 @@ class Fl_Widget;
 class Fl_Window;
 
 enum class SizeApprovalResult {
+    decideLater,
     ignorePermanently,
     alwaysAllow,
 };
@@ -20,10 +21,10 @@ public:
 
 private:
     const std::vector<SizeWarning>& warnings_;
-    SizeApprovalResult result_{SizeApprovalResult::ignorePermanently};
+    SizeApprovalResult result_{SizeApprovalResult::decideLater};
     Fl_Window* window_{};
 
     static void ignorePermanentlyCallback(Fl_Widget*, void* context);
     static void alwaysAllowCallback(Fl_Widget*, void* context);
-    static void ignoreCloseCallback(Fl_Widget*, void* context);
+    static void decideLaterCallback(Fl_Widget*, void* context);
 };

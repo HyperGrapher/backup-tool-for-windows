@@ -17,72 +17,25 @@
 #include <FL/platform.H>
 
 #include "config_store.hpp"
+#include "backup_mode_dialog.hpp"
 #include "native_file_dialog.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
+#include "ui_controls.hpp"
+#include "ui_helpers.hpp"
+#include "ui_table.hpp"
+#include <FL/Fl_Choice.H>
+#include <FL/Fl_Input.H>
 
 namespace {
 
-constexpr int kRootColumnWidths[] = {128, 90, 380, 90, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
-void styleButton(Fl_Button& button, bool isPrimary = false, bool isDanger = false) {
-    button.box(FL_FLAT_BOX);
-    button.down_box(FL_FLAT_BOX);
-    button.color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kControl));
-    button.down_color(isPrimary ? UiTheme::kPrimaryPressed
-                                : (isDanger ? UiTheme::kDangerPressed : UiTheme::kPressedControl));
-    button.selection_color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kSelection));
-    button.labelcolor(UiTheme::kText);
-    button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
-    button.labelsize(12);
-    button.clear_visible_focus();
-}
-
-Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = UiTheme::kUiFont) {
-    auto* label = new Fl_Box(x, y, width, height, text);
-    label->box(FL_NO_BOX);
-    label->labelsize(size);
-    label->labelcolor(color);
-    label->labelfont(font);
-    label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
-    return label;
-}
-
-[[nodiscard]] UiTheme::BackupStatus rootStatus(const ProjectsRoot& root,
-                                                const ConfiguredProjectsDiscovery& discovery,
-                                                const BackupConfig& config, const StateStore& stateStore) {
-    bool hasRoute = false;
-    UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
-    for (const BackupRoute& route : config.routes) {
-        if (route.sourceId != root.id) {
-            continue;
-        }
-        hasRoute = true;
-        for (const ConfiguredProjectsSource& source : discovery.sources) {
-            if (source.rootId != root.id) {
-                continue;
-            }
-            const std::optional<RouteRuntimeState> state =
-                stateStore.routeState(source.source.id, route.destinationId);
-            if (!state.has_value() || state->isDirty) {
-                status = UiTheme::BackupStatus::waiting;
-            }
-            if (state.has_value() && state->status == RouteStatus::running) {
-                status = UiTheme::BackupStatus::syncing;
-            }
-            if (state.has_value() && state->status == RouteStatus::error) {
-                return UiTheme::BackupStatus::error;
-            }
-        }
-    }
-    return hasRoute ? status : UiTheme::BackupStatus::inactive;
-}
+using Ui::styleButton;
 
 }  // namespace
 
@@ -94,110 +47,131 @@ ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& 
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
-    addLabel(x + 16, y + 10, 220, 28, "Projects", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
-    addLabel(x + 16, y + 36, width - 32, 20,
-             "Folders at any depth opt in with .backup-watch. Git repositories and generated folders are excluded.",
-             11, UiTheme::kSecondaryText);
-
-    auto* addButton = new Fl_Button(x + 16, y + 66, 112, 30, "Add roots");
-    styleButton(*addButton);
-    addButton->callback(addRootsCallback, this);
-    watchButton_ = new Fl_Button(x + 136, y + 66, 132, 30, "Watch selected");
-    styleButton(*watchButton_, true);
-    watchButton_->callback(watchCallback, this);
-    removeButton_ = new Fl_Button(x + 276, y + 66, 132, 30, "Remove selected");
+    Ui::label(x + 24, y + 16, width - 48, 36, "Projects", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
+    Ui::label(x + 24, y + 56, width - 48, 44,
+              "Choose a parent folder, then watch the projects you want backed up.", 14, UiTheme::kSecondaryText);
+    auto* add = new ActionButton(x + 24, y + 108, 180, 36, "Add parent folder");
+    styleButton(*add, true);
+    add->callback(addRootsCallback, this);
+    removeButton_ = new ActionButton(x + 216, y + 108, 192, 36, "Remove parent…");
     styleButton(*removeButton_, false, true);
     removeButton_->callback(removeCallback, this);
-
-    addLabel(x + 20, y + 108, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 148, y + 108, 86, 22, "Backup", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    addLabel(x + 238, y + 108, 370, 22, "Root folder / watched project", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    addLabel(x + 618, y + 108, 86, 22, "Projects", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    addLabel(x + 708, y + 108, 100, 22, "Destinations", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    rootBrowser_ = new Fl_Multi_Browser(x + 16, y + 130, width - 32, height - 162);
-    rootBrowser_->box(FL_BORDER_BOX);
-    rootBrowser_->color(UiTheme::kSurface);
-    rootBrowser_->textcolor(UiTheme::kText);
-    rootBrowser_->selection_color(UiTheme::kSelection);
-    rootBrowser_->textfont(UiTheme::kUiFont);
-    rootBrowser_->textsize(12);
-    rootBrowser_->column_widths(kRootColumnWidths);
-    rootBrowser_->column_char('\t');
-    rootBrowser_->format_char(0);
+    auto* help = new ActionButton(x + 420, y + 108, 112, 36, "How it works");
+    help->callback([](Fl_Widget*, void*) {
+        Ui::showDetails("Watching creates a .backup-watch marker in the selected folder.\n\n"
+                        "All watched projects use their parent folder's backup mode and all configured destinations.\n\n"
+                        "Entire Git repository folders, generated folders such as build and node_modules, junctions, "
+                        "and paths matched by .backup-ignore are excluded.\n\n"
+                        "Removing a parent stops its backups; existing copies and marker files remain.", "Watching projects");
+    });
+    parentChoice_ = new Fl_Choice(x + 24, y + 156, width - 48, 36);
+    parentChoice_->when(FL_WHEN_CHANGED);
+    parentChoice_->callback([](Fl_Widget*, void* context) {
+        auto* panel = static_cast<ProjectsPanel*>(context);
+        const int index = panel->parentChoice_->value();
+        if (index >= 0 && index < static_cast<int>(panel->parentIds_.size())) {
+            panel->selectedParentId_ = panel->parentIds_[index];
+        }
+        panel->refreshProjectRows();
+    }, this);
+    filterChoice_ = new Fl_Choice(x + 24, y + 204, 188, 36);
+    filterChoice_->add("Watched projects");
+    filterChoice_->add("Available to watch");
+    filterChoice_->value(0);
+    filterChoice_->callback([](Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->refreshProjectRows(); }, this);
+    for (auto* choice : {parentChoice_, filterChoice_}) {
+        choice->box(FL_BORDER_BOX);
+        choice->color(UiTheme::kSurface);
+        choice->textcolor(UiTheme::kText);
+        choice->textfont(UiTheme::kUiFont);
+        choice->textsize(13);
+        choice->selection_color(UiTheme::kSelection);
+    }
+    Ui::label(x + 224, y + 204, 56, 36, "Search", 12, UiTheme::kSecondaryText);
+    searchInput_ = new Fl_Input(x + 284, y + 204, width - 308, 36);
+    searchInput_->color(UiTheme::kSurface);
+    searchInput_->textcolor(UiTheme::kText);
+    searchInput_->cursor_color(UiTheme::kText);
+    searchInput_->textfont(UiTheme::kUiFont);
+    searchInput_->textsize(14);
+    searchInput_->when(FL_WHEN_CHANGED);
+    searchInput_->callback([](Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->refreshProjectRows(); }, this);
+    watchButton_ = new ActionButton(x + 24, y + 252, 208, 36, "Watch selected folders");
+    styleButton(*watchButton_, true);
+    watchButton_->callback(watchCallback, this);
+    auto* details = new ActionButton(x + 244, y + 252, 112, 36, "Details");
+    details->callback([](Fl_Widget*, void* context) {
+        auto* panel = static_cast<ProjectsPanel*>(context);
+        const auto text = panel->rootBrowser_->selectedDetails();
+        if (!text.empty()) { Ui::showDetails(text, "Project details"); }
+        else { panel->resultSummary_->copy_label("Select a project to see its full path."); }
+    }, this);
+    rootBrowser_ = new DataTable(x + 24, y + 300, width - 48, height - 356,
+                                 {"Project / path", "State", "Backup mode"}, {55, 25, 20});
     rootBrowser_->callback(selectionCallback, this);
-    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
+    resultSummary_ = Ui::label(x + 24, y + height - 48, width - 48, 40, "", 12, UiTheme::kSecondaryText);
     end();
     resizable(rootBrowser_);
     refresh();
 }
 
 void ProjectsPanel::refresh() {
-    discovery_ = discoverConfiguredProjects(config_.projectsRoots);
-    rootBrowser_->clear();
-    rootIdByRow_.clear();
-    eligibleFolderByRow_.clear();
-    for (const ProjectsRoot& root : config_.projectsRoots) {
-        std::vector<const ConfiguredProjectsSource*> watchedProjects;
-        for (const ConfiguredProjectsSource& source : discovery_.sources) {
-            if (source.rootId == root.id) {
-                watchedProjects.push_back(&source);
-            }
+    try {
+        discovery_ = discoverConfiguredProjects(config_.projectsRoots);
+        parentChoice_->clear();
+        parentIds_.clear();
+        int selectedIndex = 0;
+        for (const auto& root : config_.projectsRoots) {
+            if (root.id == selectedParentId_) { selectedIndex = static_cast<int>(parentIds_.size()); }
+            parentIds_.push_back(root.id);
+            const std::string label = pathToUtf8(root.path) + (root.backupMode == BackupMode::mirror ? " · Mirror" : " · Zipped");
+            // Add the final label directly. Replacing a placeholder leaves Fl_Menu_Item's
+            // cached value pointing at the placeholder on some FLTK 1.4 builds.
+            parentChoice_->add(label.c_str());
         }
-        std::ranges::sort(watchedProjects, {}, [](const ConfiguredProjectsSource* source) {
-            return source->source.path.native();
-        });
-        std::vector<const ConfiguredProjectsDiscovery::EligibleFolder*> eligibleFolders;
-        for (const ConfiguredProjectsDiscovery::EligibleFolder& folder : discovery_.eligibleFolders) {
-            if (folder.rootId == root.id) {
-                eligibleFolders.push_back(&folder);
-            }
+        if (parentIds_.empty()) {
+            parentChoice_->add("Choose Add parent folder to begin");
+            selectedParentId_.clear();
+            parentChoice_->deactivate();
+        } else {
+            selectedParentId_ = parentIds_[selectedIndex];
+            parentChoice_->activate();
         }
-        std::ranges::sort(eligibleFolders, {}, [](const ConfiguredProjectsDiscovery::EligibleFolder* folder) {
-            return folder->path.native();
-        });
-        const std::string modeText = root.backupMode == BackupMode::mirror ? "Mirror" : "Zipped";
-        const std::string line = std::string{UiTheme::statusText(rootStatus(root, discovery_, config_, stateStore_))} +
-                                 '\t' + modeText + '\t' + pathToUtf8(root.path) + '\t' +
-                                 std::to_string(watchedProjects.size()) + '\t' +
-                                 std::to_string(config_.destinations.size());
-        rootBrowser_->add(line.c_str());
-        rootIdByRow_.push_back(root.id);
-        eligibleFolderByRow_.emplace_back();
+        parentChoice_->value(selectedIndex);
+        refreshProjectRows();
+    } catch (const std::exception& error) { reportError(error); }
+}
 
-        for (const ConfiguredProjectsSource* project : watchedProjects) {
-            std::error_code relativeError;
-            const std::filesystem::path relativePath =
-                std::filesystem::relative(project->source.path, root.path, relativeError);
-            const std::filesystem::path displayPath = relativeError ? project->source.path : relativePath;
-            const std::string projectLine = "\t\t    > " + pathToUtf8(displayPath) +
-                                            "\tWatched\t" + std::to_string(config_.destinations.size());
-            rootBrowser_->add(projectLine.c_str());
-            rootIdByRow_.emplace_back();
-            eligibleFolderByRow_.emplace_back();
-        }
-
-        for (const ConfiguredProjectsDiscovery::EligibleFolder* folder : eligibleFolders) {
-            std::error_code relativeError;
-            const std::filesystem::path relativePath =
-                std::filesystem::relative(folder->path, root.path, relativeError);
-            const std::filesystem::path displayPath = relativeError ? folder->path : relativePath;
-            const std::string folderLine = "\t\t    + " + pathToUtf8(displayPath) +
-                                           "\tEligible\t" + std::to_string(config_.destinations.size());
-            rootBrowser_->add(folderLine.c_str());
-            rootIdByRow_.emplace_back();
-            eligibleFolderByRow_.push_back(folder->path);
+void ProjectsPanel::refreshProjectRows() {
+    std::vector<TableRow> rows;
+    const auto root = std::ranges::find(config_.projectsRoots, selectedParentId_, &ProjectsRoot::id);
+    const std::string query = searchInput_->value();
+    if (root != config_.projectsRoots.end()) {
+        const std::string mode = root->backupMode == BackupMode::mirror ? "Mirror" : "Zipped";
+        if (filterChoice_->value() == 0) {
+            for (const auto& project : discovery_.sources) {
+                const std::string path = pathToUtf8(project.source.path);
+                if (project.rootId != root->id || (!query.empty() && path.find(query) == std::string::npos)) { continue; }
+                rows.push_back({project.source.id, {pathToUtf8(project.source.path.filename()) + "\n" + path, "Watched", mode},
+                               path + "\nWatched · " + mode + "\nCopied to every destination."});
+            }
+        } else {
+            for (const auto& folder : discovery_.eligibleFolders) {
+                const std::string path = pathToUtf8(folder.path);
+                if (folder.rootId != root->id || (!query.empty() && path.find(query) == std::string::npos)) { continue; }
+                rows.push_back({path, {pathToUtf8(folder.path.filename()) + "\n" + path, "Available to watch", mode}, path});
+            }
         }
     }
-    const std::string summary = std::to_string(config_.projectsRoots.size()) + " Roots, " +
-                                std::to_string(discovery_.sources.size()) + " watched Projects, " +
-                                std::to_string(discovery_.eligibleFolders.size()) + " eligible folders";
+    const auto count = rows.size();
+    rootBrowser_->setRows(std::move(rows));
+    rootBrowser_->emptyMessage(root == config_.projectsRoots.end() ? "Choose a folder containing your projects."
+        : (!query.empty() ? "No projects match this search. Clear Search to see all results."
+        : (filterChoice_->value() == 0 ? "No projects watched here yet. Choose Available to watch to select folders."
+                                      : "No eligible folders found. Open How it works to review the exclusions.")));
+    const std::string summary = std::to_string(count) + " projects shown · Watching creates a .backup-watch file";
     resultSummary_->copy_label(summary.c_str());
     refreshSelectionState();
-    redraw();
 }
 
 void ProjectsPanel::addRootsCallback(Fl_Widget*, void* context) { static_cast<ProjectsPanel*>(context)->addRoots(); }
@@ -211,13 +185,11 @@ void ProjectsPanel::addRoots() {
         if (paths.empty()) {
             return;
         }
-        const int modeChoice = fl_choice(
-            "How should Projects under these Roots be backed up?\n\nMirror keeps uncompressed folder copies.\nZipped creates best-compression ZIP archives.",
-            "Cancel", "Mirror", "Zipped");
-        if (modeChoice == 0) {
+        const auto selectedMode = chooseBackupMode(paths.size());
+        if (!selectedMode.has_value()) {
             return;
         }
-        const BackupMode backupMode = modeChoice == 1 ? BackupMode::mirror : BackupMode::zipped;
+        const BackupMode backupMode = *selectedMode;
         BackupConfig updated = config_;
         for (const std::filesystem::path& path : paths) {
             const auto normalized = std::filesystem::absolute(path).lexically_normal();
@@ -235,22 +207,16 @@ void ProjectsPanel::addRoots() {
 }
 
 std::vector<std::string> ProjectsPanel::selectedRootIds() const {
-    std::vector<std::string> ids;
-    for (int line = 1; line <= rootBrowser_->size(); ++line) {
-        const std::string& rootId = rootIdByRow_.at(static_cast<std::size_t>(line - 1));
-        if (rootBrowser_->selected(line) != 0 && !rootId.empty()) {
-            ids.push_back(rootId);
-        }
-    }
-    return ids;
+    return selectedParentId_.empty() ? std::vector<std::string>{} : std::vector<std::string>{selectedParentId_};
 }
 
 std::vector<std::filesystem::path> ProjectsPanel::selectedEligibleFolders() const {
     std::vector<std::filesystem::path> folders;
-    for (int line = 1; line <= rootBrowser_->size(); ++line) {
-        const std::filesystem::path& folder = eligibleFolderByRow_.at(static_cast<std::size_t>(line - 1));
-        if (rootBrowser_->selected(line) != 0 && !folder.empty()) {
-            folders.push_back(folder);
+    if (filterChoice_->value() != 1) { return folders; }
+    const auto keys = rootBrowser_->selectedKeys();
+    for (const auto& folder : discovery_.eligibleFolders) {
+        if (folder.rootId == selectedParentId_ && std::ranges::find(keys, pathToUtf8(folder.path)) != keys.end()) {
+            folders.push_back(folder.path);
         }
     }
     return folders;
@@ -269,9 +235,7 @@ void ProjectsPanel::watchSelectedFolders() {
             createProjectWatchMarker(folder);
             ++createdCount;
         } catch (const std::exception& error) {
-            if (firstError.empty()) {
-                firstError = error.what();
-            }
+            firstError += pathToUtf8(folder) + ": " + error.what() + "\n";
         }
     }
     if (createdCount > 0) {
@@ -282,9 +246,9 @@ void ProjectsPanel::watchSelectedFolders() {
             return;
         }
     }
-    if (!firstError.empty()) {
-        fl_alert("%s", firstError.c_str());
-    }
+    const std::string receipt = "Now watching " + std::to_string(createdCount) + " folders.";
+    resultSummary_->copy_label(receipt.c_str());
+    if (!firstError.empty()) { Ui::showDetails(receipt + "\n\nCould not watch:\n" + firstError, "Some folders need attention"); }
 }
 
 void ProjectsPanel::removeSelectedRoots() {
@@ -307,16 +271,10 @@ void ProjectsPanel::removeSelectedRoots() {
 }
 
 void ProjectsPanel::refreshSelectionState() {
-    for (int line = 1; line <= rootBrowser_->size(); ++line) {
-        const std::size_t index = static_cast<std::size_t>(line - 1);
-        if (rootIdByRow_.at(index).empty() && eligibleFolderByRow_.at(index).empty()) {
-            rootBrowser_->select(line, 0);
-        }
-    }
-    const bool hasSelectedRoots = !selectedRootIds().empty();
-    const bool hasSelectedEligibleFolders = !selectedEligibleFolders().empty();
-    hasSelectedRoots ? removeButton_->activate() : removeButton_->deactivate();
-    hasSelectedEligibleFolders ? watchButton_->activate() : watchButton_->deactivate();
+    if (selectedParentId_.empty()) { removeButton_->deactivate(); }
+    else { removeButton_->activate(); }
+    if (selectedEligibleFolders().empty()) { watchButton_->deactivate(); }
+    else { watchButton_->activate(); }
 }
 
-void ProjectsPanel::reportError(const std::exception& error) const { fl_alert("%s", error.what()); }
+void ProjectsPanel::reportError(const std::exception& error) const { resultSummary_->copy_label(error.what()); resultSummary_->labelcolor(UiTheme::kError); }

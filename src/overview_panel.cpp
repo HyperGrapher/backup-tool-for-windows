@@ -15,6 +15,8 @@
 #include "projects_scanner.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
+#include "ui_helpers.hpp"
+#include "backup_health.hpp"
 
 namespace {
 
@@ -52,35 +54,33 @@ Fl_Box* addStatusRow(int x, int y, int width, const char* title) {
 
 OverviewPanel::OverviewPanel(int x, int y, int width, int height, const BackupConfig& config,
                              const std::vector<ConfiguredProjectsSource>& projectsSources,
-                             StateStore& stateStore)
+                             StateStore& stateStore, std::function<void()> openSources,
+                             std::function<void()> openDestinations)
     : Fl_Group(x, y, width, height), config_(config), projectsSources_(projectsSources),
-      stateStore_(stateStore) {
+      stateStore_(stateStore), openSources_(std::move(openSources)), openDestinations_(std::move(openDestinations)) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 16, y + 10, width - 32, 28, "Backup status", 18, UiTheme::kText,
-             UiTheme::kUiFontSemibold);
-    addLabel(x + 16, y + 36, width - 32, 22,
-             "What is protected, what is waiting, and what needs attention.", 11, UiTheme::kSecondaryText);
-
-    const int rowX = x + 16;
-    const int rowWidth = width - 32;
-    destinationHealth_ = addStatusRow(rowX, y + 68, rowWidth, "Destinations");
-    pendingRoutes_ = addStatusRow(rowX, y + 102, rowWidth, "Pending changes");
-    watcherStatus_ = addStatusRow(rowX, y + 136, rowWidth, "Watching");
-    lastBackup_ = addStatusRow(rowX, y + 170, rowWidth, "Last successful backup");
-    lastArchive_ = addStatusRow(rowX, y + 204, rowWidth, "Last Zipped backup");
-
-    addLabel(x + 16, y + 252, width - 68, 24, "Failures requiring attention", 13, UiTheme::kText,
-             UiTheme::kUiFontSemibold);
-    clearFailuresButton_ = new ClearHistoryButton(x + width - 44, y + 250, 28, "Clear failures");
+    Ui::label(x + 24, y + 16, width - 48, 36, "Overview", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
+    healthTitle_ = Ui::label(x + 24, y + 72, width - 48, 32, "", 20, UiTheme::kPrimary, UiTheme::kUiFontSemibold);
+    healthHint_ = Ui::label(x + 24, y + 110, width - 48, 48, "", 14, UiTheme::kSecondaryText);
+    auto* sources = new ActionButton(x + 24, y + 170, 168, 36, "Choose sources");
+    Ui::styleButton(*sources, true);
+    sources->callback([](Fl_Widget*, void* context) { static_cast<OverviewPanel*>(context)->openSources_(); }, this);
+    auto* destinations = new ActionButton(x + 204, y + 170, 180, 36, "View destinations");
+    destinations->callback([](Fl_Widget*, void* context) { static_cast<OverviewPanel*>(context)->openDestinations_(); }, this);
+    const int rowX = x + 24;
+    const int rowWidth = width - 48;
+    destinationHealth_ = addStatusRow(rowX, y + 226, rowWidth, "Destinations");
+    pendingRoutes_ = addStatusRow(rowX, y + 260, rowWidth, "Pending backups");
+    watcherStatus_ = addStatusRow(rowX, y + 294, rowWidth, "Configured sources");
+    lastBackup_ = addStatusRow(rowX, y + 328, rowWidth, "Last successful backup");
+    lastArchive_ = addStatusRow(rowX, y + 362, rowWidth, "Last Zipped backup");
+    Ui::label(x + 24, y + 398, width - 88, 28, "Recent errors · history, not current health", 13, UiTheme::kSecondaryText);
+    clearFailuresButton_ = new ClearHistoryButton(x + width - 56, y + 396, 32, "Clear error history");
     clearFailuresButton_->callback(clearFailuresCallback, this);
-    addLabel(x + 20, y + 278, 150, 22, "Time", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    addLabel(x + 170, y + 278, width - 190, 22, "Details", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    recentFailures_ = new Fl_Browser(x + 16, y + 300, width - 32, height - 316);
+    recentFailures_ = new Fl_Browser(x + 24, y + 432, width - 48, std::max(40, height - 448));
     recentFailures_->box(FL_BORDER_BOX);
     recentFailures_->color(UiTheme::kSurface);
     recentFailures_->textcolor(UiTheme::kText);
@@ -99,64 +99,59 @@ OverviewPanel::OverviewPanel(int x, int y, int width, int height, const BackupCo
 
 void OverviewPanel::refresh() {
     std::vector<ConnectedVolume> connectedVolumes;
-    try {
-        connectedVolumes = findConnectedRemovableVolumes();
-    } catch (const std::exception&) {
+    bool availabilityKnown = true;
+    try { connectedVolumes = findConnectedRemovableVolumes(); }
+    catch (const std::exception&) { availabilityKnown = false; }
+    std::size_t availableCount = 0;
+    for (const auto& destination : config_.destinations) {
+        try { if (isDestinationAvailable(destination, connectedVolumes)) { ++availableCount; } }
+        catch (const std::exception&) { availabilityKnown = false; }
     }
-
-    const auto availableCount = std::ranges::count_if(config_.destinations, [&](const Destination& destination) {
-        return isDestinationAvailable(destination, connectedVolumes);
-    });
-    const std::string destinationText = std::to_string(availableCount) + " of " +
-                                        std::to_string(config_.destinations.size()) + " available";
+    const auto health = backupHealth(config_, projectsSources_, stateStore_.routeStates());
+    std::string title = health.summary();
+    std::string hint;
+    const auto sourceCount = config_.manualSources.size() + projectsSources_.size();
+    if (sourceCount == 0) {
+        hint = "Choose files or folders to back up, or watch a project from the Projects page.";
+    } else if (config_.destinations.empty()) {
+        hint = "Add a destination for your copies. Backups start automatically when both are ready.";
+    } else if (!availabilityKnown) {
+        title = "Availability unknown";
+        hint = "Drive availability could not be checked. Refresh the Destinations page to try again.";
+    } else if (availableCount < config_.destinations.size()) {
+        if (health.failed == 0) { title = "Waiting for a destination"; }
+        hint = "Open Destinations to see which locations are disconnected. Their pending work stays queued.";
+    } else if (health.failed) {
+        hint = std::to_string(health.failed) + " backups need attention. Review their details in Activity, then try Back up now.";
+    } else if (health.neverRun) {
+        hint = std::to_string(health.neverRun) + " source-to-destination copies have not completed their first backup.";
+    } else if (health.pending) {
+        hint = "Your changes are queued. Automatic backups run after edits settle, unless paused.";
+    } else {
+        hint = "No known changes are waiting. New edits will be copied automatically.";
+    }
+    healthTitle_->copy_label(title.c_str());
+    healthTitle_->labelcolor(health.failed ? UiTheme::kError : UiTheme::kPrimary);
+    healthHint_->copy_label(hint.c_str());
+    const std::string destinationText = config_.destinations.empty() ? "None added yet" :
+        (availabilityKnown ? std::to_string(availableCount) + " of " + std::to_string(config_.destinations.size()) + " available" : "Could not check availability");
     destinationHealth_->copy_label(destinationText.c_str());
-    destinationHealth_->labelcolor(availableCount == static_cast<std::ptrdiff_t>(config_.destinations.size())
-                                       ? UiTheme::kSafe
-                                       : UiTheme::kError);
-
-    const std::vector<RouteRuntimeState> states = stateStore_.routeStates();
-    const auto pendingCount = std::ranges::count_if(states, [&](const RouteRuntimeState& state) {
-        return state.isDirty && std::ranges::any_of(config_.routes, [&](const BackupRoute& route) {
-            if (route.destinationId != state.destinationId) {
-                return false;
-            }
-            if (route.sourceId == state.sourceId) {
-                return std::ranges::any_of(config_.manualSources, [&](const ManualSource& source) {
-                    return source.id == state.sourceId;
-                });
-            }
-            return std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
-                return source.rootId == route.sourceId && source.source.id == state.sourceId;
-            });
-        });
-    });
-    const std::string pendingText = pendingCount == 0 ? "●—● Current" :
-                                                        "●  ○ " + std::to_string(pendingCount) + " waiting";
-    pendingRoutes_->copy_label(pendingText.c_str());
-    pendingRoutes_->labelcolor(pendingCount == 0 ? UiTheme::kSafe : UiTheme::kPending);
-
-    std::optional<std::string> latestSuccess;
-    for (const RouteRuntimeState& state : states) {
-        if (state.lastSuccessUtc.has_value() && (!latestSuccess.has_value() || *state.lastSuccessUtc > *latestSuccess)) {
-            latestSuccess = state.lastSuccessUtc;
-        }
-    }
-    lastBackup_->copy_label(latestSuccess.has_value() ? latestSuccess->c_str() : "Not run yet");
-    lastBackup_->labelfont(UiTheme::kMonoFont);
-    const std::optional<std::string> latestArchive = stateStore_.latestArchiveUtc();
-    lastArchive_->copy_label(latestArchive.has_value() ? latestArchive->c_str() : "Not created yet");
-    lastArchive_->labelfont(UiTheme::kMonoFont);
-
-    const std::size_t watchedSourceCount = config_.manualSources.size() + projectsSources_.size();
-    const std::string watcherText = std::to_string(watchedSourceCount) + " Sources configured";
-    watcherStatus_->copy_label(watcherText.c_str());
-    watcherStatus_->labelcolor(UiTheme::kSafe);
+    destinationHealth_->labelcolor(UiTheme::kText);
+    const std::string pending = std::to_string(health.pending) + " source-to-destination copies";
+    pendingRoutes_->copy_label(pending.c_str());
+    const std::string watched = std::to_string(sourceCount) + " files, folders and opted-in projects";
+    watcherStatus_->copy_label(watched.c_str());
+    const std::string lastSuccess = health.lastSuccess ? Ui::localTime(*health.lastSuccess) : "No successful backup yet";
+    lastBackup_->copy_label(lastSuccess.c_str());
+    const auto archive = stateStore_.latestArchiveUtc();
+    const std::string lastArchive = archive ? Ui::localTime(*archive) : "No archive created yet";
+    lastArchive_->copy_label(lastArchive.c_str());
 
     recentFailures_->clear();
     std::size_t failureCount = 0;
     for (const ActivityRecord& record : stateStore_.recentActivity(50)) {
         if (record.severity == "error") {
-            const std::string line = record.occurredUtc + '\t' + record.message;
+            const std::string line = Ui::localTime(record.occurredUtc) + '\t' + record.message;
             recentFailures_->add(line.c_str());
             ++failureCount;
         }
@@ -175,6 +170,7 @@ void OverviewPanel::clearFailuresCallback(Fl_Widget*, void* context) {
 }
 
 void OverviewPanel::clearFailures() {
+    if (fl_choice("Clear recorded errors? This does not fix pending backups or delete backup files.", "Cancel", "Clear history", nullptr) != 1) { return; }
     try {
         stateStore_.clearFailures();
         refresh();

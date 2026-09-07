@@ -15,7 +15,7 @@ class ConfigStore;
 class Fl_Box;
 class Fl_Button;
 class Fl_Input;
-class Fl_Multi_Browser;
+class DataTable;
 class StateStore;
 
 class SourcesPanel final : public Fl_Group {
@@ -32,9 +32,8 @@ private:
     std::function<void()> configChangedCallback_;
     Fl_Input* searchInput_{};
     Fl_Button* removeButton_{};
-    Fl_Multi_Browser* sourceBrowser_{};
+    DataTable* sourceBrowser_{};
     Fl_Box* resultSummary_{};
-    std::vector<std::size_t> visibleSourceIndexes_;
 
     static void addFilesCallback(Fl_Widget*, void* context);
     static void addFoldersCallback(Fl_Widget*, void* context);

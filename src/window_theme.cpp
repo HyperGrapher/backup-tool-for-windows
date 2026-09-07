@@ -35,8 +35,8 @@ void applyDarkWindowChrome(void* nativeWindow) {
         DwmSetWindowAttribute(window, kOlderDarkModeAttribute, &useDarkMode, sizeof(useDarkMode));
     }
 
-    const COLORREF captionColor = RGB(24, 24, 24);
-    const COLORREF captionTextColor = RGB(243, 243, 243);
+    const COLORREF captionColor = RGB(16, 24, 29);
+    const COLORREF captionTextColor = RGB(237, 242, 236);
     constexpr DWORD kCaptionColorAttribute = 35;
     constexpr DWORD kCaptionTextColorAttribute = 36;
     DwmSetWindowAttribute(window, kCaptionColorAttribute, &captionColor, sizeof(captionColor));

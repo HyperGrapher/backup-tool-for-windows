@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -22,10 +23,12 @@
 #include "native_file_dialog.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
+#include "ui_controls.hpp"
+#include "ui_helpers.hpp"
+#include "ui_table.hpp"
 
 namespace {
 
-constexpr int kDestinationColumnWidths[] = {150, 155, 300, 80, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -53,29 +56,7 @@ constexpr int kDestinationColumnWidths[] = {150, 155, 300, 80, 100, 0};
     return result.str();
 }
 
-void styleButton(Fl_Button& button, bool isPrimary = false, bool isDanger = false) {
-    button.box(FL_FLAT_BOX);
-    button.down_box(FL_FLAT_BOX);
-    button.color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kControl));
-    button.down_color(isPrimary ? UiTheme::kPrimaryPressed
-                                : (isDanger ? UiTheme::kDangerPressed : UiTheme::kPressedControl));
-    button.selection_color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kSelection));
-    button.labelcolor(UiTheme::kText);
-    button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
-    button.labelsize(12);
-    button.clear_visible_focus();
-}
-
-Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = UiTheme::kUiFont) {
-    auto* label = new Fl_Box(x, y, width, height, text);
-    label->box(FL_NO_BOX);
-    label->labelsize(size);
-    label->labelcolor(color);
-    label->labelfont(font);
-    label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    return label;
-}
+using Ui::styleButton;
 
 }  // namespace
 
@@ -88,56 +69,39 @@ DestinationsPanel::DestinationsPanel(int x, int y, int width, int height, Backup
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 16, y + 10, 220, 28, "Destinations", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
-    addLabel(x + 16, y + 36, width - 32, 20,
-             "Select a connected USB drive, or add a folder or network path.", 11, UiTheme::kSecondaryText);
-
-    connectedDriveChoice_ = new Fl_Choice(x + 16, y + 66, 300, 30);
+    Ui::label(x + 24, y + 16, width - 48, 36, "Destinations", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
+    Ui::label(x + 24, y + 56, width - 48, 40,
+              "Where copies go. Every destination receives all your sources and watched projects.", 13, UiTheme::kSecondaryText);
+    connectedDriveChoice_ = new Fl_Choice(x + 24, y + 108, width - 276, 36);
     connectedDriveChoice_->box(FL_BORDER_BOX);
     connectedDriveChoice_->color(UiTheme::kSurface);
     connectedDriveChoice_->textcolor(UiTheme::kText);
     connectedDriveChoice_->selection_color(UiTheme::kSelection);
     connectedDriveChoice_->textfont(UiTheme::kUiFont);
-    connectedDriveChoice_->textsize(12);
-
-    auto* refreshButton = new Fl_Button(x + 324, y + 66, 82, 30, "Refresh");
-    styleButton(*refreshButton);
+    connectedDriveChoice_->textsize(13);
+    connectedDriveChoice_->callback(selectionCallback, this);
+    auto* refreshButton = new ActionButton(x + width - 240, y + 108, 96, 36, "Refresh");
     refreshButton->callback(refreshCallback, this);
-
-    addUsbButton_ = new Fl_Button(x + 414, y + 66, 96, 30, "Add USB");
+    addUsbButton_ = new ActionButton(x + width - 136, y + 108, 112, 36, "Add USB");
     styleButton(*addUsbButton_, true);
     addUsbButton_->callback(addUsbCallback, this);
-
-    auto* addFolderButton = new Fl_Button(x + 518, y + 66, 104, 30, "Add folder");
-    styleButton(*addFolderButton);
-    addFolderButton->callback(addFolderCallback, this);
-
-    removeButton_ = new Fl_Button(x + 630, y + 66, 132, 30, "Remove selected");
+    auto* folders = new ActionButton(x + 24, y + 156, 244, 36, "Add folder / network location");
+    folders->callback(addFolderCallback, this);
+    removeButton_ = new ActionButton(x + 280, y + 156, 132, 36, "Remove…");
     styleButton(*removeButton_, false, true);
     removeButton_->callback(removeCallback, this);
-    removeButton_->deactivate();
-
-    addLabel(x + 20, y + 108, 146, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 170, y + 108, 151, 22, "Name", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 325, y + 108, 296, 22, "Location", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 625, y + 108, 76, 22, "Pending", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 705, y + 108, 96, 22, "Free space", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-
-    destinationBrowser_ = new Fl_Multi_Browser(x + 16, y + 130, width - 32, height - 162);
-    destinationBrowser_->box(FL_BORDER_BOX);
-    destinationBrowser_->color(UiTheme::kSurface);
-    destinationBrowser_->textcolor(UiTheme::kText);
-    destinationBrowser_->selection_color(UiTheme::kSelection);
-    destinationBrowser_->textsize(12);
-    destinationBrowser_->textfont(UiTheme::kUiFont);
-    destinationBrowser_->column_widths(kDestinationColumnWidths);
-    destinationBrowser_->column_char('\t');
-    destinationBrowser_->format_char(0);
+    auto* details = new ActionButton(x + 424, y + 156, 112, 36, "Details");
+    details->callback([](Fl_Widget*, void* context) {
+        auto* panel = static_cast<DestinationsPanel*>(context);
+        const auto text = panel->destinationBrowser_->selectedDetails();
+        if (!text.empty()) { Ui::showDetails(text, "Destination details"); }
+        else { panel->resultSummary_->copy_label("Select a destination to see and copy its full path."); }
+    }, this);
+    destinationBrowser_ = new DataTable(x + 24, y + 208, width - 48, height - 264,
+                                        {"Destination / location", "Availability", "Pending", "Free space"}, {43, 24, 13, 20});
     destinationBrowser_->callback(selectionCallback, this);
-    destinationBrowser_->when(FL_WHEN_CHANGED);
-
-    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
+    destinationBrowser_->emptyMessage("Add a USB drive or folder to receive copies. Disconnected drives keep their pending work.");
+    resultSummary_ = Ui::label(x + 24, y + height - 48, width - 48, 40, "", 12, UiTheme::kSecondaryText);
 
     end();
     resizable(destinationBrowser_);
@@ -147,13 +111,13 @@ DestinationsPanel::DestinationsPanel(int x, int y, int width, int height, Backup
 void DestinationsPanel::refresh() {
     try {
         refreshConnectedDrives();
-        destinationBrowser_->clear();
+        std::vector<TableRow> rows;
         const std::vector<RouteRuntimeState> states = stateStore_.routeStates();
 
         for (const Destination& destination : config_.destinations) {
             bool isAvailable = true;
             std::string location = pathToUtf8(destination.root);
-            std::string freeSpace = "--";
+            std::string freeSpace = "Not measured";
             if (destination.kind == DestinationKind::removable) {
                 const auto connected = std::ranges::find(connectedVolumes_, destination.volumeSerial,
                                                          &ConnectedVolume::serial);
@@ -173,18 +137,22 @@ void DestinationsPanel::refresh() {
             const bool hasError = std::ranges::any_of(states, [&](const RouteRuntimeState& state) {
                 return state.destinationId == destination.id && state.status == RouteStatus::error;
             });
-            UiTheme::BackupStatus visualStatus = UiTheme::BackupStatus::current;
-            if (!isAvailable || pendingCount > 0) {
-                visualStatus = UiTheme::BackupStatus::waiting;
-            }
-            if (hasError && isAvailable) {
-                visualStatus = UiTheme::BackupStatus::error;
-            }
-            const std::string line = std::string{UiTheme::statusText(visualStatus)} + '\t' + destination.name + '\t' +
-                                     location + '\t' + std::to_string(pendingCount) + '\t' + freeSpace;
-            destinationBrowser_->add(line.c_str());
+            // Availability answers whether the location can be reached. A prior route
+            // failure is shown in details and must not make a connected drive look offline.
+            const std::string availability = isAvailable
+                                                  ? "Connected"
+                                                  : (destination.kind == DestinationKind::removable ? "Disconnected"
+                                                                                                  : "Unavailable");
+            const std::string pendingText = hasError
+                                                ? std::to_string(pendingCount) + " · needs attention"
+                                                : std::to_string(pendingCount);
+            rows.push_back({destination.id, {destination.name + "\n" + location, availability,
+                                             pendingText, freeSpace},
+                           destination.name + "\n" + location + "\n" + availability + "\n" +
+                           pendingText + " pending backups\nFree space: " + freeSpace +
+                           (hasError ? "\nAt least one route needs attention; see Activity for details." : "")});
         }
-
+        destinationBrowser_->setRows(std::move(rows));
         const std::string summary = std::to_string(config_.destinations.size()) + " configured Destinations";
         resultSummary_->copy_label(summary.c_str());
         refreshSelectionState();
@@ -291,12 +259,8 @@ void DestinationsPanel::addFolders() {
 }
 
 void DestinationsPanel::removeSelectedDestinations() {
-    std::unordered_set<std::string> selectedIds;
-    for (int line = 1; line <= destinationBrowser_->size(); ++line) {
-        if (destinationBrowser_->selected(line) != 0) {
-            selectedIds.insert(config_.destinations.at(static_cast<std::size_t>(line - 1)).id);
-        }
-    }
+    const auto selected = destinationBrowser_->selectedKeys();
+    const std::unordered_set<std::string> selectedIds(selected.begin(), selected.end());
     if (selectedIds.empty()) {
         return;
     }
@@ -326,11 +290,17 @@ void DestinationsPanel::removeSelectedDestinations() {
 }
 
 void DestinationsPanel::refreshConnectedDrives() {
+    std::optional<std::uint32_t> selectedSerial;
+    const int selectedIndex = connectedDriveChoice_->value();
+    if (selectedIndex >= 0 && selectedIndex < static_cast<int>(connectedVolumes_.size())) {
+        selectedSerial = connectedVolumes_[selectedIndex].serial;
+    }
     connectedVolumes_ = findConnectedRemovableVolumes();
     connectedDriveChoice_->clear();
     for (const ConnectedVolume& volume : connectedVolumes_) {
         const std::string name = volume.label.empty() ? "USB Drive" : volume.label;
-        const std::string entry = pathToUtf8(volume.root) + "  " + name + "  (" +
+        const bool isConfigured = std::ranges::any_of(config_.destinations, [&](const Destination& destination) { return destination.kind == DestinationKind::removable && destination.volumeSerial == volume.serial; });
+        const std::string entry = (isConfigured ? "[Added] " : "") + pathToUtf8(volume.root) + "  " + name + "  (" +
                                   formatGibibytes(volume.freeBytes) + " free)";
         connectedDriveChoice_->add(entry.c_str());
     }
@@ -340,26 +310,35 @@ void DestinationsPanel::refreshConnectedDrives() {
         connectedDriveChoice_->value(0);
         addUsbButton_->deactivate();
     } else {
-        connectedDriveChoice_->value(0);
-        addUsbButton_->activate();
+        int restoreIndex = 0;
+        if (selectedSerial) {
+            for (int index = 0; index < static_cast<int>(connectedVolumes_.size()); ++index) {
+                if (connectedVolumes_[index].serial == *selectedSerial) { restoreIndex = index; }
+            }
+        }
+        connectedDriveChoice_->value(restoreIndex);
+        refreshSelectionState();
     }
 }
 
 void DestinationsPanel::refreshSelectionState() {
-    bool hasSelection = false;
-    for (int line = 1; line <= destinationBrowser_->size(); ++line) {
-        if (destinationBrowser_->selected(line) != 0) {
-            hasSelection = true;
-            break;
-        }
+    const auto count = destinationBrowser_->selectedKeys().size();
+    const std::string label = count ? "Remove " + std::to_string(count) + "…" : "Remove…";
+    removeButton_->copy_label(label.c_str());
+    if (count) { removeButton_->activate(); }
+    else { removeButton_->deactivate(); }
+    const int selected = connectedDriveChoice_->value();
+    bool canAdd = selected >= 0 && selected < static_cast<int>(connectedVolumes_.size());
+    if (canAdd) {
+        canAdd = !std::ranges::any_of(config_.destinations, [&](const Destination& destination) {
+            return destination.kind == DestinationKind::removable && destination.volumeSerial == connectedVolumes_[selected].serial;
+        });
     }
-    if (hasSelection) {
-        removeButton_->activate();
-    } else {
-        removeButton_->deactivate();
-    }
+    if (canAdd) { addUsbButton_->activate(); }
+    else { addUsbButton_->deactivate(); }
 }
 
 void DestinationsPanel::reportError(const std::exception& error) const {
-    fl_alert("%s", error.what());
+    resultSummary_->copy_label(error.what());
+    resultSummary_->labelcolor(UiTheme::kError);
 }

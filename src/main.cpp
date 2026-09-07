@@ -31,6 +31,7 @@
 #include <FL/Fl_Double_Window.H>
 #include <FL/Fl_Group.H>
 #include <FL/Fl_Menu_Button.H>
+#include <FL/Fl_Tooltip.H>
 #include <FL/fl_ask.H>
 #include <FL/fl_draw.H>
 #include <FL/platform.H>
@@ -40,6 +41,9 @@
 #include "activity_panel.hpp"
 #include "config_store.hpp"
 #include "backup_engine.hpp"
+#include "backup_health.hpp"
+#include "deferred_project_backups.hpp"
+#include "ui_helpers.hpp"
 #include "backup_notification.hpp"
 #include "destinations_panel.hpp"
 #include "explorer_integration.hpp"
@@ -52,6 +56,7 @@
 #include "sources_panel.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
+#include "ui_controls.hpp"
 #include "window_theme.hpp"
 
 namespace {
@@ -218,7 +223,6 @@ void styleButton(Fl_Button& button, bool isSelected = false, bool isStrong = fal
     button.labelcolor(UiTheme::kText);
     button.labelfont(isSelected || isStrong ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
     button.labelsize(12);
-    button.clear_visible_focus();
 }
 
 enum class NavigationIcon {
@@ -236,7 +240,6 @@ public:
         : Fl_Button(x, y, width, height, label), icon_(icon) {
         box(FL_NO_BOX);
         down_box(FL_NO_BOX);
-        clear_visible_focus();
     }
 
     void setSelected(bool isSelected) {
@@ -275,6 +278,10 @@ public:
             fl_rectf(x(), y() + 6, 2, h() - 12);
         }
 
+        if (Fl::focus() == this) {
+            fl_color(UiTheme::kFocus);
+            fl_rect(x() + 2, y() + 2, w() - 4, h() - 4);
+        }
         const Fl_Color foreground = isSelected_ ? UiTheme::kText : UiTheme::kSecondaryText;
         drawIcon(x() + 14, y() + h() / 2, foreground);
         fl_color(isSelected_ ? UiTheme::kText : UiTheme::kSecondaryText);
@@ -360,11 +367,6 @@ public:
           stateStore_(dataDirectory_ / L"state.db"), config_(loadOrCreateConfig(configStore_)),
           tray_([this] { show(); }, [this] { requestExit(); }, [this] { handleDestinationDevicesChanged(); }) {
         configureLogging(dataDirectory_);
-        try {
-            ensureExplorerIntegration(dataDirectory_);
-        } catch (const std::exception& error) {
-            spdlog::warn("Explorer watched-folder badges are unavailable: {}", error.what());
-        }
         buildUi();
         if (!tray_.create()) {
             throw std::runtime_error("Unable to create the notification-area icon.");
@@ -374,7 +376,11 @@ public:
         initializeRouteStates();
         updateGlobalStatus();
         Fl::add_timeout(1.0, automaticWorkTimerCallback, this);
-        spdlog::info("Application started in the notification area");
+        if (config_.manualSources.empty() && config_.projectsRoots.empty() && config_.destinations.empty()) {
+            show();
+            footerStatus_->copy_label("Welcome. Add a source and a destination to begin. Closing this window keeps backups in the tray.");
+        }
+        spdlog::info("Application started");
     }
 
     ~App() {
@@ -403,6 +409,7 @@ public:
             centerWindow();
             hasPositionedWindow_ = true;
         }
+        backupNotification_.hide();
         showWithDarkWindowChrome(*window_);
 
         const HWND nativeWindow = fl_xid(window_.get());
@@ -421,6 +428,11 @@ public:
     }
 
     void requestExit() {
+        if (isBackupRunning_) {
+            show();
+            footerStatus_->copy_label("A backup is still running. Let it finish, then choose Exit again.");
+            return;
+        }
         hide();
         isRunning_ = false;
     }
@@ -463,6 +475,8 @@ private:
     Fl_Box* footerStatus_{};
     Fl_Button* runNowButton_{};
     Fl_Menu_Button* pauseMenu_{};
+    Fl_Button* resumeButton_{};
+    DeferredProjectBackups deferredProjects_;
     BackupEngine backupEngine_;
     BackupNotification backupNotification_;
     SourceWatcher sourceWatcher_;
@@ -512,7 +526,9 @@ private:
     }
 
     static void runNowCallback(Fl_Widget*, void* data) {
-        static_cast<App*>(data)->startBackupRun();
+        auto* app = static_cast<App*>(data);
+        app->deferredProjects_.clear();
+        app->startBackupRun();
     }
 
     static void pauseOneHourCallback(Fl_Widget*, void* data) {
@@ -553,9 +569,15 @@ private:
     void buildUi() {
         Fl::scheme("none");
         UiTheme::initializeFonts();
-        Fl::background(30, 30, 30);
-        Fl::background2(38, 38, 38);
-        Fl::foreground(243, 243, 243);
+        Fl::background(20, 29, 34);
+        Fl::background2(29, 42, 48);
+        Fl::foreground(237, 242, 236);
+        Fl::visible_focus(1);
+        Fl_Tooltip::font(UiTheme::kUiFont);
+        Fl_Tooltip::size(12);
+        Fl_Tooltip::color(UiTheme::kControl);
+        Fl_Tooltip::textcolor(UiTheme::kText);
+        fl_message_font(UiTheme::kUiFont, 14);
 
         window_ = std::make_unique<Fl_Double_Window>(kWindowWidth, kWindowHeight, "BackItUpTool");
         window_->size_range(860, 560);
@@ -571,20 +593,25 @@ private:
         configurationSummary_ = addLabel(206, 0, kWindowWidth - 430, kTopBarHeight, "", 11,
                                          UiTheme::kSecondaryText);
 
-        pauseMenu_ = new Fl_Menu_Button(kWindowWidth - 220, 11, 96, 30, "Pause");
+        pauseMenu_ = new Fl_Menu_Button(kWindowWidth - 244, 9, 96, 36, "Pause");
         pauseMenu_->box(FL_FLAT_BOX);
         pauseMenu_->color(UiTheme::kControl);
         pauseMenu_->selection_color(UiTheme::kSelection);
         pauseMenu_->labelcolor(UiTheme::kText);
         pauseMenu_->labelfont(UiTheme::kUiFont);
-        pauseMenu_->labelsize(12);
-        pauseMenu_->clear_visible_focus();
+        pauseMenu_->labelsize(13);
+        pauseMenu_->textfont(UiTheme::kUiFont);
+        pauseMenu_->textsize(13);
+        pauseMenu_->textcolor(UiTheme::kText);
         pauseMenu_->add("1 hour", 0, pauseOneHourCallback, this);
         pauseMenu_->add("3 hours", 0, pauseThreeHoursCallback, this);
         pauseMenu_->add("5 hours", 0, pauseFiveHoursCallback, this);
         pauseMenu_->add("Resume", 0, resumeCallback, this);
 
-        runNowButton_ = new Fl_Button(kWindowWidth - 116, 11, 100, 30, "Run now");
+        resumeButton_ = new ActionButton(kWindowWidth - 244, 9, 96, 36, "Resume");
+        resumeButton_->callback(resumeCallback, this);
+        resumeButton_->hide();
+        runNowButton_ = new ActionButton(kWindowWidth - 140, 9, 124, 36, "Back up now");
         styleButton(*runNowButton_, false, true);
         runNowButton_->callback(runNowCallback, this);
         auto* headerDivider = new Fl_Box(0, kTopBarHeight - 1, kWindowWidth, 1);
@@ -600,7 +627,7 @@ private:
         sidebarDivider->color(UiTheme::kBorder);
 
         constexpr const char* navigationLabels[] = {
-            "Backup status", "Sources", "Projects", "Destinations", "Activity", "Settings"};
+            "Overview", "Sources", "Projects", "Destinations", "Activity", "Settings"};
         constexpr NavigationIcon navigationIcons[] = {
             NavigationIcon::status, NavigationIcon::source, NavigationIcon::project,
             NavigationIcon::destination, NavigationIcon::activity, NavigationIcon::settings};
@@ -630,11 +657,6 @@ private:
             }
         }
 
-        auto* openFolderButton =
-            new Fl_Button(10, kWindowHeight - kFooterHeight - 40, kSidebarWidth - 20, 30, "Open data folder");
-        styleButton(*openFolderButton);
-        openFolderButton->callback(openDataDirectoryCallback, this);
-
         const int panelX = kSidebarWidth;
         const int panelY = kTopBarHeight;
         const int panelWidth = kWindowWidth - panelX;
@@ -653,10 +675,12 @@ private:
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
             [this] { handleConfigChanged(); });
         overviewPanel_ =
-            new OverviewPanel(panelX, panelY, panelWidth, panelHeight, config_, projectsSources_, stateStore_);
+            new OverviewPanel(panelX, panelY, panelWidth, panelHeight, config_, projectsSources_, stateStore_,
+                              [this] { showSourcesPage(); }, [this] { showDestinationsPage(); });
         activityPanel_ = new ActivityPanel(panelX, panelY, panelWidth, panelHeight, config_, stateStore_);
         settingsPanel_ = new SettingsPanel(panelX, panelY, panelWidth, panelHeight, config_, configStore_,
-                                           [this] { handleConfigChanged(); });
+                                           [this] { handleConfigChanged(); }, [this] { openDataDirectory(); },
+                                           [this] { ensureExplorerIntegration(dataDirectory_); });
         panelStack_->end();
         sourcesPanel_->hide();
         projectsPanel_->hide();
@@ -883,7 +907,12 @@ private:
 
     void pauseFor(std::chrono::hours duration) {
         pauseUntil_ = std::chrono::steady_clock::now() + duration;
-        footerStatus_->copy_label("Automatic backups are paused. Run now remains available.");
+        const std::time_t resumeAt = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now() + duration);
+        std::tm local{};
+        localtime_s(&local, &resumeAt);
+        std::ostringstream message;
+        message << "Automatic backups paused until " << std::put_time(&local, "%H:%M") << ". Back up now remains available.";
+        footerStatus_->copy_label(message.str().c_str());
         updateGlobalStatus();
     }
 
@@ -924,10 +953,11 @@ private:
             isBackupRunning_ = true;
             runNowButton_->deactivate();
             footerStatus_->copy_label("Checking pending backups...");
-            backupNotification_.show("Checking pending backup work...");
+            if (!hasVisibleWindow()) { backupNotification_.show("Checking pending backup work..."); }
             const BackupConfig configSnapshot = config_;
             const std::vector<ConfiguredProjectsSource> projectsSourcesSnapshot = projectsSources_;
-            backupThread_ = std::thread([this, configSnapshot, projectsSourcesSnapshot] {
+            const auto deferredProjects = deferredProjects_;
+            backupThread_ = std::thread([this, configSnapshot, projectsSourcesSnapshot, deferredProjects] {
                 BackupPreparation preparation;
                 preparation.largeFileThresholdBytes = configSnapshot.settings.largeFileThresholdBytes;
                 try {
@@ -935,6 +965,8 @@ private:
                         backupEngine_.previewPendingMirrors(configSnapshot, projectsSourcesSnapshot, stateStore_);
                     preparation.archivePlans =
                         backupEngine_.previewPendingArchives(configSnapshot, projectsSourcesSnapshot, stateStore_);
+                    deferredProjects.removeFrom(preparation.mirrorPlans);
+                    deferredProjects.removeFrom(preparation.archivePlans);
                     std::vector<BackupPlan> plansToCheck = preparation.mirrorPlans;
                     plansToCheck.insert(plansToCheck.end(), preparation.archivePlans.begin(),
                                         preparation.archivePlans.end());
@@ -950,6 +982,8 @@ private:
                 Fl::awake(backupPreparedAwake, this);
             });
         } catch (const std::exception& error) {
+            isBackupRunning_ = false;
+            runNowButton_->activate();
             backupNotification_.hide();
             footerStatus_->copy_label(error.what());
             reportError(error);
@@ -979,6 +1013,12 @@ private:
             const std::vector<SizeWarning> folderWarning{warning};
             SizeApprovalDialog dialog{folderWarning};
             const SizeApprovalResult decision = dialog.show();
+            if (decision == SizeApprovalResult::decideLater) {
+                deferredProjects_.defer(warning.sourceId);
+                deferredProjects_.removeFrom(preparation.mirrorPlans);
+                deferredProjects_.removeFrom(preparation.archivePlans);
+                continue;
+            }
             const ProjectBackupDecision storedDecision = decision == SizeApprovalResult::alwaysAllow
                                                              ? ProjectBackupDecision::alwaysAllow
                                                              : ProjectBackupDecision::ignoreLargeFiles;
@@ -989,7 +1029,9 @@ private:
             runNowButton_->activate();
             backupNotification_.hide();
             const bool shouldCheckAgain = consumeDeferredRefreshes();
-            if (hasPendingBackupWork()) {
+            if (!deferredProjects_.empty()) {
+                footerStatus_->copy_label("Projects await your decision. Use Back up now to review them; other changes still back up automatically.");
+            } else if (hasPendingBackupWork()) {
                 footerStatus_->copy_label("Backup is pending. Waiting for a Source or Destination.");
             } else {
                 footerStatus_->copy_label("No backup work is currently pending.");
@@ -1004,7 +1046,7 @@ private:
                                    " Mirrors and " + std::to_string(preparation.archivePlans.size()) +
                                    " Zipped backups...";
         footerStatus_->copy_label(status.c_str());
-        backupNotification_.show(status);
+        if (!hasVisibleWindow()) { backupNotification_.show(status); }
         updateGlobalStatus();
         backupThread_ = std::thread([this, preparation = std::move(preparation)] {
             BackupRunSummary result;
@@ -1079,7 +1121,7 @@ private:
 
     [[nodiscard]] bool hasPendingBackupWork() const {
         return std::ranges::any_of(stateStore_.routeStates(), [&](const RouteRuntimeState& state) {
-            return state.isDirty && isConfiguredRouteState(state);
+            return state.isDirty && isConfiguredRouteState(state) && !deferredProjects_.contains(state.sourceId);
         });
     }
 
@@ -1094,45 +1136,29 @@ private:
         const std::size_t watchedCount = config_.manualSources.size() + projectsSources_.size();
         const std::string summary = std::to_string(watchedCount) + " watched · " +
                                     std::to_string(config_.destinations.size()) + " destinations · Last backup " +
-                                    (latestSuccess.has_value() ? *latestSuccess : "not run yet");
+                                    (latestSuccess.has_value() ? Ui::localTime(*latestSuccess) : "not run yet");
         configurationSummary_->copy_label(summary.c_str());
         window_->redraw();
     }
 
     void updateGlobalStatus() {
-        std::size_t pendingCount = 0;
-        bool hasError = false;
-        for (const RouteRuntimeState& state : stateStore_.routeStates()) {
-            if (!isConfiguredRouteState(state)) {
-                continue;
-            }
-            if (state.isDirty) {
-                ++pendingCount;
-            }
-            if (state.status == RouteStatus::error) {
-                hasError = true;
-            }
-        }
-
-        UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
-        std::string text{UiTheme::statusText(status)};
-        if (pauseUntil_.has_value()) {
-            status = UiTheme::BackupStatus::waiting;
-            text = "●  ○ Paused";
-        } else if (isBackupRunning_) {
+        const auto health = backupHealth(config_, projectsSources_, stateStore_.routeStates());
+        UiTheme::BackupStatus status = health.failed ? UiTheme::BackupStatus::error :
+            (health.pending ? UiTheme::BackupStatus::waiting : UiTheme::BackupStatus::current);
+        std::string text = health.summary();
+        if (isBackupRunning_) {
+            text = "Backing up";
             status = UiTheme::BackupStatus::syncing;
-            text = std::string{UiTheme::statusText(status)};
-        } else if (hasError) {
-            status = UiTheme::BackupStatus::error;
-            text = std::string{UiTheme::statusText(status)};
-        } else if (pendingCount > 0) {
+        } else if (pauseUntil_) {
+            text = health.failed ? "Paused · errors" : "Automatic work paused";
             status = UiTheme::BackupStatus::waiting;
-            text = "●  ○ " + std::to_string(pendingCount) + " waiting";
-        } else if (config_.routes.empty()) {
-            status = UiTheme::BackupStatus::inactive;
-            text = "○  ○ No backup routes";
         }
-
+        if (pauseUntil_) { pauseMenu_->hide(); resumeButton_->show(); }
+        else { resumeButton_->hide(); pauseMenu_->show(); }
+        if (!isBackupRunning_ && !deferredProjects_.empty()) {
+            text = "Needs approval";
+            status = UiTheme::BackupStatus::waiting;
+        }
         globalStatus_->copy_label(text.c_str());
         globalStatus_->labelcolor(UiTheme::statusColor(status));
         updateConfigurationSummary();

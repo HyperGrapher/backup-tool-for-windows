@@ -15,6 +15,8 @@
 #include <FL/platform.H>
 
 #include "ui_theme.hpp"
+#include "ui_controls.hpp"
+#include "ui_helpers.hpp"
 #include "window_theme.hpp"
 
 namespace {
@@ -36,7 +38,6 @@ void styleButton(Fl_Button& button, Fl_Color color, Fl_Color pressedColor,
     button.labelcolor(labelColor);
     button.labelfont(UiTheme::kUiFont);
     button.labelsize(12);
-    button.clear_visible_focus();
 }
 
 Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
@@ -55,14 +56,14 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
 SizeApprovalDialog::SizeApprovalDialog(const std::vector<SizeWarning>& warnings) : warnings_(warnings) {}
 
 SizeApprovalResult SizeApprovalDialog::show() {
-    Fl_Double_Window window(720, 430, "BackItUpTool - approval needed");
-    window.callback(ignoreCloseCallback, this);
+    Fl_Double_Window window(720, 470, "BackItUpTool - approval needed");
+    window.callback(decideLaterCallback, this);
     window.color(UiTheme::kBackground);
     window.begin();
-    addLabel(24, 18, 670, 30, "Large backup items need your approval", 18, UiTheme::kText,
+    addLabel(24, 18, 670, 30, "Choose a policy for this project", 18, UiTheme::kText,
              UiTheme::kUiFontSemibold);
     addLabel(24, 52, 670, 42,
-             "Ignore permanently skips the listed large files. Always allow includes them in every backup.", 12,
+             "This choice applies to future backups of this project. Decide later keeps this project pending while other backups continue.", 12,
              UiTheme::kSecondaryText);
 
     auto* browser = new Fl_Browser(24, 102, 672, 235);
@@ -73,29 +74,31 @@ SizeApprovalResult SizeApprovalDialog::show() {
     browser->textsize(12);
     browser->textfont(UiTheme::kMonoFont);
     for (const SizeWarning& warning : warnings_) {
-        browser->add(("Project: " + warning.sourcePath.string()).c_str());
+        browser->add(("Project: " + Ui::pathText(warning.sourcePath)).c_str());
         for (const LargeEligibleFile& largeFile : warning.largeFiles) {
-            browser->add(("  Large file: " + largeFile.relativePath.string() + " (" +
+            browser->add(("  Large file: " + Ui::pathText(largeFile.relativePath) + " (" +
                           formatMiB(largeFile.sizeBytes) + ")").c_str());
         }
         browser->add(("  Eligible project total: " + formatMiB(warning.eligibleSizeBytes)).c_str());
     }
 
-    auto* ignoreButton = new Fl_Button(24, 355, 324, 42, "Ignore permanently");
+    auto* ignoreButton = new ActionButton(24, 386, 228, 42, "Skip large files");
     styleButton(*ignoreButton, UiTheme::kWarning, UiTheme::kWarningPressed);
     ignoreButton->callback(ignorePermanentlyCallback, this);
-    auto* alwaysButton = new Fl_Button(360, 355, 336, 42, "Always allow");
+    auto* alwaysButton = new ActionButton(264, 386, 228, 42, "Include large files");
     styleButton(*alwaysButton, UiTheme::kSuccessAction, UiTheme::kSuccessActionPressed);
     alwaysButton->labelfont(UiTheme::kUiFontSemibold);
     alwaysButton->callback(alwaysAllowCallback, this);
+    auto* later = new ActionButton(504, 386, 192, 42, "Decide later");
+    later->callback(decideLaterCallback, this);
+    Ui::label(24, 342, 672, 36, "Skipping uses the configured size limit, including for new large files in this project.", 12, UiTheme::kSecondaryText);
     window.end();
     window_ = &window;
     window.set_modal();
     showWithDarkWindowChrome(window);
     const HWND nativeWindow = fl_xid(&window);
-    SetWindowPos(nativeWindow, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
     SetForegroundWindow(nativeWindow);
+    later->take_focus();
     while (window.shown()) {
         Fl::wait(0.05);
     }
@@ -114,4 +117,8 @@ void SizeApprovalDialog::alwaysAllowCallback(Fl_Widget*, void* context) {
     dialog->window_->hide();
 }
 
-void SizeApprovalDialog::ignoreCloseCallback(Fl_Widget*, void*) {}
+void SizeApprovalDialog::decideLaterCallback(Fl_Widget*, void* context) {
+    auto* dialog = static_cast<SizeApprovalDialog*>(context);
+    dialog->result_ = SizeApprovalResult::decideLater;
+    dialog->window_->hide();
+}

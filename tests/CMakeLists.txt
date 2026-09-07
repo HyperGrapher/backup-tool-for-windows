@@ -1,5 +1,6 @@
 add_executable(BackItUpToolTests
     backup_config_tests.cpp
+    backup_health_tests.cpp
     backup_engine_tests.cpp
     config_store_tests.cpp
     ignore_rules_tests.cpp
@@ -14,3 +15,10 @@ target_link_libraries(BackItUpToolTests PRIVATE
 
 include(Catch)
 catch_discover_tests(BackItUpToolTests)
+
+add_executable(BackItUpToolUiPreview EXCLUDE_FROM_ALL ui_preview.cpp)
+target_link_libraries(BackItUpToolUiPreview PRIVATE back_it_up_tool_core fltk::images ole32 uuid)
+target_compile_definitions(BackItUpToolUiPreview PRIVATE UI_PREVIEW_DIRECTORY="${CMAKE_BINARY_DIR}/ui-preview")
+if(MSVC)
+    target_compile_options(BackItUpToolUiPreview PRIVATE /utf-8)
+endif()

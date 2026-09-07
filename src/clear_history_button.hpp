@@ -12,7 +12,6 @@ public:
         box(FL_NO_BOX);
         down_box(FL_NO_BOX);
         tooltip(tooltipText);
-        clear_visible_focus();
     }
 
     int handle(int event) override {
@@ -42,6 +41,7 @@ public:
         fl_line(centerX - 2, top + 7, centerX - 2, top + 12);
         fl_line(centerX + 2, top + 7, centerX + 2, top + 12);
         fl_line_style(0);
+        if (Fl::focus() == this) { fl_color(UiTheme::kFocus); fl_rect(x() + 1, y() + 1, w() - 2, h() - 2); }
     }
 
 private:

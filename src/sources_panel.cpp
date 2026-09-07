@@ -19,13 +19,16 @@
 #include <FL/platform.H>
 
 #include "config_store.hpp"
+#include "backup_mode_dialog.hpp"
 #include "native_file_dialog.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
+#include "ui_controls.hpp"
+#include "ui_helpers.hpp"
+#include "ui_table.hpp"
 
 namespace {
 
-constexpr int kSourceColumnWidths[] = {128, 70, 90, 390, 100, 0};
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -56,29 +59,7 @@ constexpr int kSourceColumnWidths[] = {128, 70, 90, 390, 100, 0};
     return key;
 }
 
-void styleButton(Fl_Button& button, bool isPrimary = false, bool isDanger = false) {
-    button.box(FL_FLAT_BOX);
-    button.down_box(FL_FLAT_BOX);
-    button.color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kControl));
-    button.down_color(isPrimary ? UiTheme::kPrimaryPressed
-                                : (isDanger ? UiTheme::kDangerPressed : UiTheme::kPressedControl));
-    button.selection_color(isPrimary ? UiTheme::kPrimary : (isDanger ? UiTheme::kDanger : UiTheme::kSelection));
-    button.labelcolor(UiTheme::kText);
-    button.labelfont(isPrimary ? UiTheme::kUiFontSemibold : UiTheme::kUiFont);
-    button.labelsize(12);
-    button.clear_visible_focus();
-}
-
-Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = UiTheme::kUiFont) {
-    auto* label = new Fl_Box(x, y, width, height, text);
-    label->box(FL_NO_BOX);
-    label->labelsize(size);
-    label->labelcolor(color);
-    label->labelfont(font);
-    label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE);
-    return label;
-}
+using Ui::styleButton;
 
 [[nodiscard]] UiTheme::BackupStatus sourceStatus(const ManualSource& source, const BackupConfig& config,
                                                   const StateStore& stateStore) {
@@ -113,53 +94,38 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 16, y + 10, 180, 28, "Sources", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
-    addLabel(x + width - 292, y + 12, 52, 28, "Search", 11, UiTheme::kSecondaryText);
-    searchInput_ = new Fl_Input(x + width - 238, y + 12, 222, 28);
+    Ui::label(x + 24, y + 16, 220, 36, "Sources", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
+    Ui::label(x + 24, y + 56, width - 48, 36,
+              "What to back up. Every source is copied to every configured destination.", 13, UiTheme::kSecondaryText);
+    auto* files = new ActionButton(x + 24, y + 108, 112, 36, "Add files");
+    styleButton(*files, true);
+    files->callback(addFilesCallback, this);
+    auto* folders = new ActionButton(x + 144, y + 108, 124, 36, "Add folders");
+    folders->callback(addFoldersCallback, this);
+    removeButton_ = new ActionButton(x + 276, y + 108, 132, 36, "Remove…");
+    styleButton(*removeButton_, false, true);
+    removeButton_->callback(removeCallback, this);
+    auto* details = new ActionButton(x + 416, y + 108, 112, 36, "Details");
+    details->callback([](Fl_Widget*, void* context) {
+        auto* panel = static_cast<SourcesPanel*>(context);
+        const auto text = panel->sourceBrowser_->selectedDetails();
+        if (!text.empty()) { Ui::showDetails(text, "Source details"); }
+        else { panel->resultSummary_->copy_label("Select a source to see and copy its full path."); }
+    }, this);
+    Ui::label(x + 24, y + 156, 64, 36, "Search", 13, UiTheme::kSecondaryText);
+    searchInput_ = new Fl_Input(x + 92, y + 156, width - 116, 36);
     searchInput_->box(FL_BORDER_BOX);
     searchInput_->color(UiTheme::kSurface);
     searchInput_->textcolor(UiTheme::kText);
     searchInput_->cursor_color(UiTheme::kText);
-    searchInput_->selection_color(UiTheme::kSelection);
     searchInput_->textfont(UiTheme::kUiFont);
-    searchInput_->textsize(12);
+    searchInput_->textsize(14);
     searchInput_->when(FL_WHEN_CHANGED);
     searchInput_->callback(searchCallback, this);
-
-    auto* addFilesButton = new Fl_Button(x + 16, y + 50, 105, 30, "Add files");
-    styleButton(*addFilesButton, true);
-    addFilesButton->callback(addFilesCallback, this);
-
-    auto* addFoldersButton = new Fl_Button(x + 129, y + 50, 110, 30, "Add folders");
-    styleButton(*addFoldersButton);
-    addFoldersButton->callback(addFoldersCallback, this);
-
-    removeButton_ = new Fl_Button(x + 247, y + 50, 132, 30, "Remove selected");
-    styleButton(*removeButton_, false, true);
-    removeButton_->callback(removeCallback, this);
-    removeButton_->deactivate();
-
-    addLabel(x + 20, y + 90, 124, 22, "State", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 148, y + 90, 66, 22, "Type", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 218, y + 90, 86, 22, "Backup", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 308, y + 90, 380, 22, "Path", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 698, y + 90, 100, 22, "Destinations", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-
-    sourceBrowser_ = new Fl_Multi_Browser(x + 16, y + 112, width - 32, height - 144);
-    sourceBrowser_->box(FL_BORDER_BOX);
-    sourceBrowser_->color(UiTheme::kSurface);
-    sourceBrowser_->textcolor(UiTheme::kText);
-    sourceBrowser_->selection_color(UiTheme::kSelection);
-    sourceBrowser_->textsize(12);
-    sourceBrowser_->textfont(UiTheme::kUiFont);
-    sourceBrowser_->column_widths(kSourceColumnWidths);
-    sourceBrowser_->column_char('\t');
-    sourceBrowser_->format_char(0);
+    sourceBrowser_ = new DataTable(x + 24, y + 208, width - 48, height - 264,
+                                   {"Source / path", "Status", "Backup mode"}, {55, 25, 20});
     sourceBrowser_->callback(selectionCallback, this);
-    sourceBrowser_->when(FL_WHEN_CHANGED);
-
-    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
+    resultSummary_ = Ui::label(x + 24, y + height - 48, width - 48, 40, "", 12, UiTheme::kSecondaryText);
 
     end();
     resizable(sourceBrowser_);
@@ -168,9 +134,7 @@ SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& co
 
 void SourcesPanel::refresh() {
     const std::string filter = lowercaseAscii(searchInput_->value());
-    visibleSourceIndexes_.clear();
-    sourceBrowser_->clear();
-
+    std::vector<TableRow> rows;
     for (std::size_t index = 0; index < config_.manualSources.size(); ++index) {
         const ManualSource& source = config_.manualSources[index];
         const std::string pathText = pathToUtf8(source.path);
@@ -182,15 +146,16 @@ void SourcesPanel::refresh() {
             continue;
         }
 
-        const std::string line = std::string{UiTheme::statusText(sourceStatus(source, config_, stateStore_))} + '\t' +
-                                 typeText + '\t' + modeText + '\t' + pathText + '\t' +
-                                 std::to_string(config_.destinations.size());
-        sourceBrowser_->add(line.c_str());
-        visibleSourceIndexes_.push_back(index);
+        const std::string status = std::string{UiTheme::statusText(sourceStatus(source, config_, stateStore_))};
+        rows.push_back({source.id, {Ui::pathText(source.path.filename()) + "\n" + pathText, status, modeText},
+                       pathText + "\n" + typeText + " · " + modeText + "\n" + status +
+                       "\nCopied to all " + std::to_string(config_.destinations.size()) + " destinations."});
     }
-
-    const std::string summary = std::to_string(visibleSourceIndexes_.size()) + " shown of " +
-                                std::to_string(config_.manualSources.size()) + " Manual Sources";
+    const std::string summary = std::to_string(rows.size()) + " shown of " +
+                                std::to_string(config_.manualSources.size()) + " sources · Select rows for details or removal";
+    sourceBrowser_->emptyMessage(filter.empty() ? "Choose Add files or Add folders to start backing up."
+                                               : "No sources match this search. Clear the search to show all sources.");
+    sourceBrowser_->setRows(std::move(rows));
     resultSummary_->copy_label(summary.c_str());
     refreshSelectionState();
     redraw();
@@ -237,13 +202,11 @@ void SourcesPanel::addSources(const std::vector<std::filesystem::path>& paths, M
         return;
     }
 
-    const int modeChoice = fl_choice(
-        "How should these Sources be backed up?\n\nMirror keeps an uncompressed folder copy.\nZipped creates a best-compression ZIP archive.",
-        "Cancel", "Mirror", "Zipped");
-    if (modeChoice == 0) {
+    const auto selectedMode = chooseBackupMode(paths.size());
+    if (!selectedMode.has_value()) {
         return;
     }
-    const BackupMode backupMode = modeChoice == 1 ? BackupMode::mirror : BackupMode::zipped;
+    const BackupMode backupMode = *selectedMode;
 
     BackupConfig updatedConfig = config_;
     std::unordered_set<std::wstring> knownPaths;
@@ -270,6 +233,9 @@ void SourcesPanel::addSources(const std::vector<std::filesystem::path>& paths, M
     config_ = std::move(updatedConfig);
     configChangedCallback_();
     refresh();
+    const std::string receipt = "Added " + std::to_string(addedCount) + " sources · " +
+                                std::to_string(paths.size() - addedCount) + " already configured";
+    resultSummary_->copy_label(receipt.c_str());
 }
 
 void SourcesPanel::removeSelectedSources() {
@@ -304,31 +270,15 @@ void SourcesPanel::removeSelectedSources() {
 }
 
 std::vector<std::string> SourcesPanel::selectedSourceIds() const {
-    std::vector<std::string> sourceIds;
-    for (int line = 1; line <= sourceBrowser_->size(); ++line) {
-        if (sourceBrowser_->selected(line) == 0) {
-            continue;
-        }
-        const std::size_t visibleIndex = static_cast<std::size_t>(line - 1);
-        sourceIds.push_back(config_.manualSources.at(visibleSourceIndexes_.at(visibleIndex)).id);
-    }
-    return sourceIds;
+    return sourceBrowser_->selectedKeys();
 }
 
 void SourcesPanel::refreshSelectionState() {
-    bool hasSelection = false;
-    for (int line = 1; line <= sourceBrowser_->size(); ++line) {
-        if (sourceBrowser_->selected(line) != 0) {
-            hasSelection = true;
-            break;
-        }
-    }
-    if (hasSelection) {
-        removeButton_->activate();
-    } else {
-        removeButton_->deactivate();
-    }
-
+    const auto count = sourceBrowser_->selectedKeys().size();
+    const std::string label = count ? "Remove " + std::to_string(count) + "…" : "Remove…";
+    removeButton_->copy_label(label.c_str());
+    if (count) { removeButton_->activate(); }
+    else { removeButton_->deactivate(); }
 }
 
 void SourcesPanel::reportError(const std::exception& error) const {

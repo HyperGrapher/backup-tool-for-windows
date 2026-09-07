@@ -15,21 +15,12 @@
 #include "projects_scanner.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
+#include "ui_helpers.hpp"
+#include "ui_table.hpp"
+#include <FL/Fl_Choice.H>
+#include <FL/Fl_Input.H>
 
 namespace {
-
-constexpr int kActivityColumnWidths[] = {155, 90, 175, 145, 0};
-
-Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = UiTheme::kUiFont) {
-    auto* label = new Fl_Box(x, y, width, height, text);
-    label->box(FL_NO_BOX);
-    label->labelsize(size);
-    label->labelcolor(color);
-    label->labelfont(font);
-    label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
-    return label;
-}
 
 [[nodiscard]] std::string pathToUtf8(const std::filesystem::path& path) {
     const std::u8string bytes = path.u8string();
@@ -76,7 +67,7 @@ Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size
     if (record.severity == "warning") {
         return "Waiting";
     }
-    return "Completed";
+    return "Info";
 }
 
 }  // namespace
@@ -88,58 +79,76 @@ ActivityPanel::ActivityPanel(int x, int y, int width, int height, const BackupCo
     color(UiTheme::kBackground);
     begin();
 
-    addLabel(x + 16, y + 10, width - 68, 28, "Activity", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
-    clearActivityButton_ = new ClearHistoryButton(x + width - 44, y + 10, 28, "Clear activity history");
+    Ui::label(x + 24, y + 16, width - 48, 36, "Activity", 24, UiTheme::kText, UiTheme::kUiFontSemibold);
+    Ui::label(x + 24, y + 56, width - 48, 40,
+              "Recent backup work, newest first. Select an event to read and copy the full details.", 13, UiTheme::kSecondaryText);
+    filterChoice_ = new Fl_Choice(x + 24, y + 108, 164, 36);
+    filterChoice_->add("All events");
+    filterChoice_->add("Errors");
+    filterChoice_->add("Waiting");
+    filterChoice_->value(0);
+    filterChoice_->color(UiTheme::kSurface);
+    filterChoice_->textcolor(UiTheme::kText);
+    filterChoice_->textfont(UiTheme::kUiFont);
+    filterChoice_->textsize(13);
+    filterChoice_->callback([](Fl_Widget*, void* context) { static_cast<ActivityPanel*>(context)->refresh(); }, this);
+    Ui::label(x + 200, y + 108, 56, 36, "Search", 12, UiTheme::kSecondaryText);
+    searchInput_ = new Fl_Input(x + 260, y + 108, width - 284, 36);
+    searchInput_->color(UiTheme::kSurface);
+    searchInput_->textcolor(UiTheme::kText);
+    searchInput_->cursor_color(UiTheme::kText);
+    searchInput_->textfont(UiTheme::kUiFont);
+    searchInput_->textsize(14);
+    searchInput_->when(FL_WHEN_CHANGED);
+    searchInput_->callback([](Fl_Widget*, void* context) { static_cast<ActivityPanel*>(context)->refresh(); }, this);
+    auto* details = new ActionButton(x + 24, y + 156, 140, 36, "Event details");
+    details->callback([](Fl_Widget*, void* context) {
+        auto* panel = static_cast<ActivityPanel*>(context);
+        const auto text = panel->activityBrowser_->selectedDetails();
+        if (!text.empty()) { Ui::showDetails(text, "Activity details"); }
+        else { panel->resultSummary_->copy_label("Select one or more events to see their details."); }
+    }, this);
+    clearActivityButton_ = new ActionButton(x + 176, y + 156, 144, 36, "Clear history…");
+    Ui::styleButton(*clearActivityButton_, false, true);
     clearActivityButton_->callback(clearActivityCallback, this);
-    addLabel(x + 16, y + 36, width - 32, 20,
-             "Mirror, Zipped backup, and failure history. Newest events appear first.", 11,
-             UiTheme::kSecondaryText);
-
-    addLabel(x + 20, y + 66, 151, 22, "Time", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 175, y + 66, 86, 22, "Result", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 265, y + 66, 171, 22, "Source", 11, UiTheme::kSecondaryText, UiTheme::kUiFontSemibold);
-    addLabel(x + 440, y + 66, 141, 22, "Destination", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-    addLabel(x + 585, y + 66, width - 601, 22, "Details", 11, UiTheme::kSecondaryText,
-             UiTheme::kUiFontSemibold);
-
-    activityBrowser_ = new Fl_Browser(x + 16, y + 88, width - 32, height - 120);
-    activityBrowser_->box(FL_BORDER_BOX);
-    activityBrowser_->color(UiTheme::kSurface);
-    activityBrowser_->textcolor(UiTheme::kText);
-    activityBrowser_->selection_color(UiTheme::kSelection);
-    activityBrowser_->textfont(UiTheme::kUiFont);
-    activityBrowser_->textsize(12);
-    activityBrowser_->column_widths(kActivityColumnWidths);
-    activityBrowser_->column_char('\t');
-    activityBrowser_->format_char(0);
-
-    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
-
+    activityBrowser_ = new DataTable(x + 24, y + 208, width - 48, height - 264,
+                                     {"Local time", "Result", "Source → destination"}, {29, 23, 48});
+    resultSummary_ = Ui::label(x + 24, y + height - 48, width - 48, 40, "", 12, UiTheme::kSecondaryText);
     end();
     resizable(activityBrowser_);
     refresh();
 }
 
 void ActivityPanel::refresh() {
-    activityBrowser_->clear();
-    const std::vector<ActivityRecord> records = stateStore_.recentActivity(250);
-    const ConfiguredProjectsDiscovery projects = discoverConfiguredProjects(config_.projectsRoots);
-    for (const ActivityRecord& record : records) {
-        const std::string line = record.occurredUtc + '\t' + resultName(record) + '\t' +
-                                 sourceName(config_, projects, record.sourceId) + '\t' +
-                                 destinationName(config_, record.destinationId) + '\t' + record.message;
-        activityBrowser_->add(line.c_str());
+    try {
+        const auto records = stateStore_.recentActivity(250);
+        const auto projects = discoverConfiguredProjects(config_.projectsRoots);
+        std::vector<TableRow> rows;
+        const std::string query = searchInput_->value();
+        for (const auto& record : records) {
+            if (filterChoice_->value() == 1 && record.severity != "error") { continue; }
+            if (filterChoice_->value() == 2 && record.severity != "warning") { continue; }
+            const std::string source = sourceName(config_, projects, record.sourceId);
+            const std::string destination = destinationName(config_, record.destinationId);
+            const std::string details = Ui::localTime(record.occurredUtc) + " (local)\nUTC: " + record.occurredUtc +
+                                        "\n" + source + " → " + destination + "\n\n" + record.message;
+            if (!query.empty() && details.find(query) == std::string::npos) { continue; }
+            rows.push_back({std::to_string(record.id), {Ui::localTime(record.occurredUtc), resultName(record),
+                                                       source + " → " + destination}, details});
+        }
+        const std::string summary = std::to_string(rows.size()) + " shown · Filters search the latest " +
+                                    std::to_string(records.size()) + " events (up to 250)";
+        activityBrowser_->setRows(std::move(rows));
+        activityBrowser_->emptyMessage(records.empty() ? "No activity yet. Backup results will appear here."
+                                                       : "No events match these filters. Choose All events and clear Search.");
+        resultSummary_->copy_label(summary.c_str());
+        if (records.empty()) { clearActivityButton_->deactivate(); }
+        else { clearActivityButton_->activate(); }
+        redraw();
+    } catch (const std::exception& error) {
+        resultSummary_->copy_label(error.what());
+        resultSummary_->labelcolor(UiTheme::kError);
     }
-    if (records.empty()) {
-        activityBrowser_->add("—\tNo activity yet\t—\t—\tBackups will appear here after they run.");
-        clearActivityButton_->deactivate();
-    } else {
-        clearActivityButton_->activate();
-    }
-    const std::string summary = std::to_string(records.size()) + " recent events";
-    resultSummary_->copy_label(summary.c_str());
-    redraw();
 }
 
 void ActivityPanel::clearActivityCallback(Fl_Widget*, void* context) {
@@ -147,6 +156,7 @@ void ActivityPanel::clearActivityCallback(Fl_Widget*, void* context) {
 }
 
 void ActivityPanel::clearActivity() {
+    if (fl_choice("Clear recorded activity? Backup files and pending work stay unchanged.", "Cancel", "Clear history", nullptr) != 1) { return; }
     try {
         stateStore_.clearActivity();
         refresh();

@@ -13,7 +13,9 @@
 class ConfigStore;
 class Fl_Box;
 class Fl_Button;
-class Fl_Multi_Browser;
+class DataTable;
+class Fl_Choice;
+class Fl_Input;
 class StateStore;
 
 class ProjectsPanel final : public Fl_Group {
@@ -30,11 +32,15 @@ private:
     std::function<void()> configChangedCallback_;
     Fl_Button* watchButton_{};
     Fl_Button* removeButton_{};
-    Fl_Multi_Browser* rootBrowser_{};
+    DataTable* rootBrowser_{};
     Fl_Box* resultSummary_{};
     ConfiguredProjectsDiscovery discovery_;
-    std::vector<std::string> rootIdByRow_;
-    std::vector<std::filesystem::path> eligibleFolderByRow_;
+    Fl_Choice* parentChoice_{};
+    Fl_Choice* filterChoice_{};
+    Fl_Input* searchInput_{};
+    std::vector<std::string> parentIds_;
+    std::string selectedParentId_;
+    void refreshProjectRows();
 
     static void addRootsCallback(Fl_Widget*, void* context);
     static void watchCallback(Fl_Widget*, void* context);

@@ -15,7 +15,7 @@ class ConfigStore;
 class Fl_Box;
 class Fl_Button;
 class Fl_Choice;
-class Fl_Multi_Browser;
+class DataTable;
 class StateStore;
 
 class DestinationsPanel final : public Fl_Group {
@@ -33,7 +33,7 @@ private:
     Fl_Choice* connectedDriveChoice_{};
     Fl_Button* addUsbButton_{};
     Fl_Button* removeButton_{};
-    Fl_Multi_Browser* destinationBrowser_{};
+    DataTable* destinationBrowser_{};
     Fl_Box* resultSummary_{};
     std::vector<ConnectedVolume> connectedVolumes_;
 

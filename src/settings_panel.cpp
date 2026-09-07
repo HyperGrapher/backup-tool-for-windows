@@ -1,39 +1,30 @@
 #include "settings_panel.hpp"
 
+#include <charconv>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
 
-#include <FL/Fl_Box.H>
-#include <FL/Fl_Button.H>
 #include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Int_Input.H>
-#include <FL/fl_ask.H>
+#include <FL/Fl_Scroll.H>
 
 #include "config_store.hpp"
 #include "startup_registration.hpp"
-#include "ui_theme.hpp"
+#include "ui_helpers.hpp"
 
 namespace {
-
 constexpr std::uint64_t kBytesPerMiB = 1024ULL * 1024ULL;
 
-Fl_Box* addLabel(int x, int y, int width, int height, const char* text, int size, Fl_Color color,
-                 Fl_Font font = UiTheme::kUiFont) {
-    auto* label = new Fl_Box(x, y, width, height, text);
-    label->box(FL_NO_BOX);
-    label->labelsize(size);
-    label->labelcolor(color);
-    label->labelfont(font);
-    label->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
-    return label;
-}
-
-void addDivider(int x, int y, int width) {
-    auto* divider = new Fl_Box(x, y, width, 1);
-    divider->box(FL_FLAT_BOX);
-    divider->color(UiTheme::kBorder);
+[[nodiscard]] int positiveInt(const char* text) {
+    const std::string value{text};
+    int number = 0;
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+    if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size() || number < 1 || number > 100000) {
+        return 0;
+    }
+    return number;
 }
 
 void styleInput(Fl_Int_Input& input) {
@@ -42,138 +33,151 @@ void styleInput(Fl_Int_Input& input) {
     input.textcolor(UiTheme::kText);
     input.cursor_color(UiTheme::kText);
     input.selection_color(UiTheme::kSelection);
-    input.textfont(UiTheme::kMonoFont);
-    input.textsize(12);
+    input.textfont(UiTheme::kUiFont);
+    input.textsize(14);
 }
-
-void styleButton(Fl_Button& button) {
-    button.box(FL_FLAT_BOX);
-    button.down_box(FL_FLAT_BOX);
-    button.color(UiTheme::kPrimary);
-    button.down_color(UiTheme::kPrimaryPressed);
-    button.labelcolor(UiTheme::kText);
-    button.labelfont(UiTheme::kUiFontSemibold);
-    button.labelsize(12);
-    button.clear_visible_focus();
 }
-
-[[nodiscard]] int positiveInt(const char* text, const char* fieldName) {
-    try {
-        const std::string value{text};
-        std::size_t parsedLength = 0;
-        const long parsed = std::stol(value, &parsedLength);
-        if (parsedLength != value.size() || parsed <= 0 || parsed > 100000) {
-            throw std::invalid_argument("range");
-        }
-        return static_cast<int>(parsed);
-    } catch (const std::exception&) {
-        throw std::invalid_argument(std::string{fieldName} + " must be a positive whole number.");
-    }
-}
-
-}  // namespace
 
 SettingsPanel::SettingsPanel(int x, int y, int width, int height, BackupConfig& config,
-                             const ConfigStore& configStore, std::function<void()> configChangedCallback)
+                             const ConfigStore& configStore, std::function<void()> configChangedCallback,
+                             std::function<void()> openLogs, std::function<void()> enableBadges)
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
-      configChangedCallback_(std::move(configChangedCallback)) {
+      configChangedCallback_(std::move(configChangedCallback)), openLogs_(std::move(openLogs)),
+      enableBadges_(std::move(enableBadges)) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
-
-    addLabel(x + 16, y + 10, width - 32, 28, "Settings", 18, UiTheme::kText, UiTheme::kUiFontSemibold);
-    addLabel(x + 16, y + 36, width - 32, 20,
-             "These values control when changes settle and which Project files need approval.", 11,
-             UiTheme::kSecondaryText);
-
-    addLabel(x + 16, y + 72, width - 32, 22, "Watching", 13, UiTheme::kText, UiTheme::kUiFontSemibold);
-    addDivider(x + 16, y + 98, width - 32);
-    addLabel(x + 16, y + 108, 230, 28, "Windows change detection", 12, UiTheme::kText);
-    addLabel(x + 250, y + 108, width - 266, 28, "ReadDirectoryChangesW — no scheduled Source scans", 11,
-             UiTheme::kSecondaryText);
-
-    addLabel(x + 16, y + 146, 230, 30, "Settle delay", 12, UiTheme::kText);
-    debounceInput_ = new Fl_Int_Input(x + 250, y + 146, 90, 28);
+    auto* scroll = new Fl_Scroll(x, y, width, height);
+    scroll->type(Fl_Scroll::VERTICAL);
+    scroll->color(UiTheme::kBackground);
+    Ui::label(x + 24, y + 24, 560, 28, "Automatic backups", 16, UiTheme::kText, UiTheme::kUiFontSemibold);
+    Ui::label(x + 24, y + 56, 260, 32, "Wait after a file changes");
+    debounceInput_ = new Fl_Int_Input(x + 300, y + 56, 100, 32);
     styleInput(*debounceInput_);
-    addLabel(x + 348, y + 146, 180, 28, "seconds after the last change", 11, UiTheme::kSecondaryText);
-
-    addLabel(x + 16, y + 198, width - 32, 22, "Project approval", 13, UiTheme::kText,
-             UiTheme::kUiFontSemibold);
-    addDivider(x + 16, y + 224, width - 32);
-    addLabel(x + 16, y + 236, 230, 30, "Large file warning", 12, UiTheme::kText);
-    largeFileInput_ = new Fl_Int_Input(x + 250, y + 236, 90, 28);
+    Ui::label(x + 412, y + 56, 160, 32, "seconds", 13, UiTheme::kSecondaryText);
+    Ui::label(x + 24, y + 94, 560, 28, "Wait for edits to settle before copying. Default: 8 seconds.", 13, UiTheme::kSecondaryText);
+    debounceError_ = Ui::label(x + 24, y + 120, 560, 22, "", 12, UiTheme::kError);
+    Ui::label(x + 24, y + 154, 560, 28, "Large project files", 16, UiTheme::kText, UiTheme::kUiFontSemibold);
+    Ui::label(x + 24, y + 186, 260, 32, "Ask about files larger than");
+    largeFileInput_ = new Fl_Int_Input(x + 300, y + 186, 100, 32);
     styleInput(*largeFileInput_);
-    addLabel(x + 348, y + 236, 120, 28, "MiB per file", 11, UiTheme::kSecondaryText);
-
-    addLabel(x + 16, y + 286, width - 32, 22, "Windows startup", 13, UiTheme::kText,
-             UiTheme::kUiFontSemibold);
-    addDivider(x + 16, y + 312, width - 32);
-    launchAtStartupCheckbox_ = new Fl_Check_Button(
-        x + 16, y + 324, width - 32, 30, "Launch BackItUp Tool when Windows starts");
+    Ui::label(x + 412, y + 186, 160, 32, "MiB per file", 13, UiTheme::kSecondaryText);
+    Ui::label(x + 24, y + 224, 560, 36,
+              "Default: 50 MiB. Projects set to skip large files use this limit in future backups.", 13, UiTheme::kSecondaryText);
+    largeFileError_ = Ui::label(x + 24, y + 262, 560, 22, "", 12, UiTheme::kError);
+    Ui::label(x + 24, y + 296, 560, 28, "Windows integration", 16, UiTheme::kText, UiTheme::kUiFontSemibold);
+    launchAtStartupCheckbox_ = new Fl_Check_Button(x + 24, y + 330, 560, 32, "Start BackItUpTool with Windows, in the tray");
     launchAtStartupCheckbox_->color(UiTheme::kBackground);
     launchAtStartupCheckbox_->selection_color(UiTheme::kPrimary);
     launchAtStartupCheckbox_->labelcolor(UiTheme::kText);
     launchAtStartupCheckbox_->labelfont(UiTheme::kUiFont);
-    launchAtStartupCheckbox_->labelsize(12);
-    launchAtStartupCheckbox_->clear_visible_focus();
-
-    saveButton_ = new Fl_Button(x + 250, y + 372, 112, 30, "Save settings");
-    styleButton(*saveButton_);
+    launchAtStartupCheckbox_->labelsize(14);
+    Ui::label(x + 24, y + 368, 560, 40,
+              "Explorer folder badges show which folders are watched. Enabling them may ask for administrator approval.",
+              13, UiTheme::kSecondaryText);
+    auto* badges = new ActionButton(x + 24, y + 416, 228, 36, "Enable Explorer badges");
+    badges->callback([](Fl_Widget*, void* context) {
+        auto* panel = static_cast<SettingsPanel*>(context);
+        try { panel->enableBadges_(); panel->resultSummary_->copy_label("Explorer badges enabled. Reopen Explorer to see them."); }
+        catch (const std::exception& error) { panel->reportError(error); }
+    }, this);
+    auto* logs = new ActionButton(x + 264, y + 416, 320, 36, "Open app logs and configuration");
+    logs->callback([](Fl_Widget*, void* context) { static_cast<SettingsPanel*>(context)->openLogs_(); }, this);
+    saveButton_ = new ActionButton(x + 24, y + 468, 144, 36, "Save changes");
+    Ui::styleButton(*saveButton_, true);
     saveButton_->callback(saveCallback, this);
-
-    resultSummary_ = addLabel(x + 16, y + height - 28, width - 32, 20, "", 11, UiTheme::kSecondaryText);
-
+    discardButton_ = new ActionButton(x + 180, y + 468, 112, 36, "Discard");
+    discardButton_->callback([](Fl_Widget*, void* context) {
+        auto* panel = static_cast<SettingsPanel*>(context);
+        panel->hasDraft_ = false;
+        panel->refresh();
+    }, this);
+    resultSummary_ = Ui::label(x + 24, y + 516, 560, 56, "", 13, UiTheme::kSecondaryText);
+    for (auto* input : {debounceInput_, largeFileInput_}) {
+        input->when(FL_WHEN_CHANGED);
+        input->callback(editCallback, this);
+    }
+    launchAtStartupCheckbox_->callback(editCallback, this);
+    scroll->end();
     end();
+    resizable(scroll);
     refresh();
 }
 
 void SettingsPanel::refresh() {
-    const std::string debounce = std::to_string(config_.settings.debounceSeconds);
-    const std::string largeFile = std::to_string(config_.settings.largeFileThresholdBytes / kBytesPerMiB);
-    debounceInput_->value(debounce.c_str());
-    largeFileInput_->value(largeFile.c_str());
+    if (hasDraft_) { return; }
+    savedDebounce_ = std::to_string(config_.settings.debounceSeconds);
+    savedLargeFile_ = std::to_string(config_.settings.largeFileThresholdBytes / kBytesPerMiB);
+    debounceInput_->value(savedDebounce_.c_str());
+    largeFileInput_->value(savedLargeFile_.c_str());
     try {
-        launchAtStartupCheckbox_->value(isLaunchAtStartupEnabled() ? 1 : 0);
+        savedStartup_ = isLaunchAtStartupEnabled() ? 1 : 0;
+        isStartupKnown_ = true;
+        launchAtStartupCheckbox_->activate();
+        launchAtStartupCheckbox_->value(savedStartup_);
     } catch (const std::exception& error) {
-        launchAtStartupCheckbox_->value(0);
-        resultSummary_->copy_label(error.what());
-        redraw();
+        isStartupKnown_ = false;
+        launchAtStartupCheckbox_->deactivate();
+        saveButton_->deactivate();
+        reportError(error);
         return;
     }
-    resultSummary_->copy_label("Changes are saved in config.json and applied immediately.");
+    updateDraft();
+}
+
+void SettingsPanel::editCallback(Fl_Widget*, void* context) {
+    static_cast<SettingsPanel*>(context)->updateDraft();
+}
+
+void SettingsPanel::updateDraft() {
+    hasDraft_ = savedDebounce_ != debounceInput_->value() || savedLargeFile_ != largeFileInput_->value() ||
+                savedStartup_ != launchAtStartupCheckbox_->value();
+    const bool validDelay = positiveInt(debounceInput_->value()) != 0;
+    const bool validLimit = positiveInt(largeFileInput_->value()) != 0;
+    debounceError_->copy_label(validDelay ? "" : "Enter a whole number from 1 to 100000 seconds.");
+    largeFileError_->copy_label(validLimit ? "" : "Enter a whole number from 1 to 100000 MiB.");
+    if (hasDraft_ && validDelay && validLimit && isStartupKnown_) { saveButton_->activate(); }
+    else { saveButton_->deactivate(); }
+    if (hasDraft_) { discardButton_->activate(); }
+    else { discardButton_->deactivate(); }
+    resultSummary_->labelcolor(UiTheme::kSecondaryText);
+    resultSummary_->copy_label(hasDraft_ ? "Unsaved changes. Your edits stay here when you change pages." : "Changes take effect when you save.");
     redraw();
 }
 
-void SettingsPanel::saveCallback(Fl_Widget*, void* context) {
-    static_cast<SettingsPanel*>(context)->save();
-}
+void SettingsPanel::saveCallback(Fl_Widget*, void* context) { static_cast<SettingsPanel*>(context)->save(); }
 
 void SettingsPanel::save() {
+    updateDraft();
+    if (!saveButton_->active()) { return; }
     try {
         BackupConfig updated = config_;
-        updated.settings.debounceSeconds = positiveInt(debounceInput_->value(), "Settle delay");
-        updated.settings.largeFileThresholdBytes =
-            static_cast<std::uint64_t>(positiveInt(largeFileInput_->value(), "Large file warning")) * kBytesPerMiB;
-        const bool wasLaunchAtStartupEnabled = isLaunchAtStartupEnabled();
-        const bool shouldLaunchAtStartup = launchAtStartupCheckbox_->value() != 0;
-        setLaunchAtStartupEnabled(shouldLaunchAtStartup);
-        try {
-            configStore_.save(updated);
-        } catch (...) {
-            try {
-                setLaunchAtStartupEnabled(wasLaunchAtStartupEnabled);
-            } catch (const std::exception&) {
-            }
+        updated.settings.debounceSeconds = positiveInt(debounceInput_->value());
+        updated.settings.largeFileThresholdBytes = static_cast<std::uint64_t>(positiveInt(largeFileInput_->value())) * kBytesPerMiB;
+        const bool wasEnabled = isLaunchAtStartupEnabled();
+        setLaunchAtStartupEnabled(launchAtStartupCheckbox_->value() != 0);
+        try { configStore_.save(updated); }
+        catch (...) {
+            try { setLaunchAtStartupEnabled(wasEnabled); }
+            catch (...) { throw std::runtime_error("Settings were not saved, and the Windows startup setting could not be restored. Check it again before retrying."); }
             throw;
         }
         config_ = std::move(updated);
-        configChangedCallback_();
-        resultSummary_->copy_label("Settings saved.");
-    } catch (const std::exception& error) {
-        reportError(error);
-    }
+        hasDraft_ = false;
+        refresh();
+        try { configChangedCallback_(); }
+        catch (const std::exception& error) {
+            const std::string message = std::string{"Settings saved, but applying them failed: "} + error.what();
+            resultSummary_->copy_label(message.c_str());
+            resultSummary_->labelcolor(UiTheme::kError);
+            return;
+        }
+        resultSummary_->copy_label("Settings saved and applied.");
+        resultSummary_->labelcolor(UiTheme::kSafe);
+    } catch (const std::exception& error) { reportError(error); }
 }
 
 void SettingsPanel::reportError(const std::exception& error) const {
-    fl_alert("%s", error.what());
+    resultSummary_->labelcolor(UiTheme::kError);
+    resultSummary_->copy_label(error.what());
 }

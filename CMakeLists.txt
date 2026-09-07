@@ -44,6 +44,7 @@ add_library(back_it_up_tool_core STATIC
     src/config_store.cpp
     src/connected_volume.cpp
     src/destinations_panel.cpp
+    src/explorer_integration.cpp
     src/ignore_rules.cpp
     src/native_file_dialog.cpp
     src/overview_panel.cpp
@@ -59,10 +60,26 @@ add_library(back_it_up_tool_core STATIC
 )
 target_include_directories(back_it_up_tool_core PUBLIC src)
 target_link_libraries(back_it_up_tool_core PUBLIC
+    advapi32
     fltk::fltk
     unofficial::sqlite3::sqlite3
     nlohmann_json::nlohmann_json
     dwmapi
+    shell32
+)
+
+add_library(BackItUpOverlay SHARED
+    src/explorer_overlay.cpp
+    src/explorer_overlay.def
+)
+target_include_directories(BackItUpOverlay PRIVATE src)
+target_link_libraries(BackItUpOverlay PRIVATE
+    nlohmann_json::nlohmann_json
+    ole32
+    shell32
+)
+set_target_properties(BackItUpOverlay PROPERTIES
+    OUTPUT_NAME "BackItUpOverlay"
 )
 
 add_executable(BackItUpTool WIN32
@@ -79,10 +96,12 @@ target_link_libraries(BackItUpTool PRIVATE
     ole32
     uuid
 )
+add_dependencies(BackItUpTool BackItUpOverlay)
 
 if(MSVC)
     target_compile_options(back_it_up_tool_core PRIVATE /W4 /permissive- /utf-8)
     target_compile_options(BackItUpTool PRIVATE /W4 /permissive- /utf-8)
+    target_compile_options(BackItUpOverlay PRIVATE /W4 /permissive- /utf-8)
 endif()
 
 set_target_properties(BackItUpTool PROPERTIES

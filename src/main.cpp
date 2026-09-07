@@ -42,6 +42,7 @@
 #include "backup_engine.hpp"
 #include "backup_notification.hpp"
 #include "destinations_panel.hpp"
+#include "explorer_integration.hpp"
 #include "overview_panel.hpp"
 #include "projects_panel.hpp"
 #include "projects_scanner.hpp"
@@ -359,6 +360,11 @@ public:
           stateStore_(dataDirectory_ / L"state.db"), config_(loadOrCreateConfig(configStore_)),
           tray_([this] { show(); }, [this] { requestExit(); }, [this] { handleDestinationDevicesChanged(); }) {
         configureLogging(dataDirectory_);
+        try {
+            ensureExplorerIntegration(dataDirectory_);
+        } catch (const std::exception& error) {
+            spdlog::warn("Explorer watched-folder badges are unavailable: {}", error.what());
+        }
         buildUi();
         if (!tray_.create()) {
             throw std::runtime_error("Unable to create the notification-area icon.");
@@ -754,6 +760,7 @@ private:
         nextAutomaticAttempt_ = std::chrono::steady_clock::now();
         updateConfigurationSummary();
         updateGlobalStatus();
+        refreshExplorerOverlays();
     }
 
     void initializeRouteStates() {
@@ -1310,6 +1317,19 @@ void dispatchNativeMessages() {
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     try {
+        int argumentCount = 0;
+        LPWSTR* arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+        const bool isExplorerRegistration =
+            arguments != nullptr && argumentCount == 2 &&
+            std::wstring_view{arguments[1]} == L"--register-explorer-overlay";
+        if (arguments != nullptr) {
+            LocalFree(arguments);
+        }
+        if (isExplorerRegistration) {
+            registerExplorerIntegrationMachineWide(applicationDataDirectory());
+            return 0;
+        }
+
         InstanceMutex instanceMutex;
         if (instanceMutex.alreadyExists()) {
             if (const HWND existingWindow = FindWindowW(kTrayWindowClass, kAppName); existingWindow != nullptr) {

@@ -1,0 +1,4 @@
+LIBRARY BackItUpOverlay
+EXPORTS
+    DllCanUnloadNow
+    DllGetClassObject

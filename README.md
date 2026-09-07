@@ -11,6 +11,7 @@ A lightweight Windows tray application for configuring and running personal file
 - `Run now` immediately processes pending changed Sources and opted-in Projects for every currently available Destination, including folder destinations when no USB drive is connected. It does not create another ZIP when nothing changed. Mirrors preserve their original path under `<destination>\BackItUpTool\Mirrors`, such as `C\Users\name\Documents`, and reject any Source/Destination overlap.
 - Manual Sources are watched automatically. Changes are debounced, saved as pending work in SQLite, mirrored when the Destination is available, and remain queued across app restarts or removable-drive disconnections.
 - Project Roots can be added from the Projects page with a required Mirror or Zipped choice. Folders at any depth opt in with `.backup-watch`; the app gives empty markers a stable UUID and uses recursive `ReadDirectoryChangesW` notifications to discover changes without polling.
+- Watched Manual Sources and opted-in Project folders display a green dot in Windows Explorer. The Explorer extension is installed on first launch and needs one administrator approval.
 - Project backups exclude `.git` repositories, `build`, `node_modules`, junctions, `.backup-watch`, `.backup-ignore`, and paths matched by `.backup-ignore`. Hidden loose files remain included.
 - The first time a Project contains a file above the configured limit, an always-on-top approval window asks whether to always include large files or permanently ignore those large files. The Project itself remains watched and backed up, and the stored decision prevents repeated prompts for that Project.
 - Mirror and Zipped are mutually exclusive per Source or Projects Root. Zipped backups read directly from the source, use ZIP compression level 9, are stored below `<destination>\BackItUpTool\Zipped`, and retain daily and monthly history.
@@ -43,8 +44,13 @@ cmake --build --preset windows-release
 ctest --preset windows-release
 ```
 
-The executable is written to `build\Release\BackItUpTool.exe`.
+The release folder contains both required files:
+
+- `build\Release\BackItUpTool.exe`
+- `build\Release\BackItUpOverlay.dll`
+
+Keep the DLL beside the executable when copying or packaging the application. On first launch, the application copies it to `%LOCALAPPDATA%\BackItUpTool\shell` and asks for administrator approval to register the Explorer green-dot extension.
 
 ## Run
 
-The application starts in the notification area. Left-click the tray icon to open the window. Right-click it for the Open and Exit menu.
+The application starts in the notification area. Left-click the tray icon to open the window. Right-click it for the Open and Exit menu. Refresh or reopen Explorer after the first run if watched folders do not immediately show their green dots.

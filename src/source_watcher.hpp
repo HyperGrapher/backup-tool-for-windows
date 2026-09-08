@@ -19,6 +19,7 @@ struct SourceWatchTarget {
     std::filesystem::path directory;
     bool isRecursive{true};
     ChangeFilter isRelevantChange;
+    bool followSymbolicLinks{};
 };
 
 [[nodiscard]] SourceWatchTarget makeSourceWatchTarget(const ManualSource& source);

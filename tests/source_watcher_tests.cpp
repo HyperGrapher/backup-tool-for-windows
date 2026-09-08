@@ -105,6 +105,40 @@ TEST_CASE("a watched change becomes a pending mirror and is reconciled") {
     REQUIRE(completedState->status == RouteStatus::synced);
 }
 
+TEST_CASE("a followed external symbolic link triggers its source watch") {
+    WatcherTemporaryDirectory directory;
+    const std::filesystem::path sourceFolder = directory.path() / "source";
+    const std::filesystem::path externalFolder = directory.path() / "external";
+    std::filesystem::create_directories(sourceFolder);
+    std::filesystem::create_directories(externalFolder);
+
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(externalFolder, sourceFolder / "linked", linkError);
+    if (linkError) {
+        SKIP("Creating symbolic links requires Windows Developer Mode or administrator privileges.");
+    }
+
+    std::mutex notificationMutex;
+    std::condition_variable notificationCondition;
+    bool wasNotified = false;
+    SourceWatcher watcher;
+    watcher.start({ManualSource{"source-one", sourceFolder, ManualSourceKind::folder, BackupMode::mirror, true}},
+                  1, [&](const std::string&) {
+                      {
+                          const std::scoped_lock lock(notificationMutex);
+                          wasNotified = true;
+                      }
+                      notificationCondition.notify_one();
+                  });
+
+    writeText(externalFolder / "changed.txt", "A change outside the watched root.");
+    {
+        std::unique_lock lock(notificationMutex);
+        REQUIRE(notificationCondition.wait_for(lock, std::chrono::seconds{6}, [&] { return wasNotified; }));
+    }
+    watcher.stop();
+}
+
 TEST_CASE("a Projects Root watch reacts to marker changes but ignores normal project files") {
     WatcherTemporaryDirectory directory;
     const std::filesystem::path project = directory.path() / "desktop-apps" / "backup-tool";

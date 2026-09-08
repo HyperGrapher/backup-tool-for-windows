@@ -65,7 +65,7 @@ using Ui::styleButton;
 }  // namespace
 
 ProjectsPanel::ProjectsPanel(int x, int y, int width, int height, BackupConfig& config,
-                             const ConfigStore& configStore, const StateStore& stateStore,
+                             const ConfigStore& configStore, StateStore& stateStore,
                              std::function<void()> configChangedCallback)
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
       stateStore_(stateStore), configChangedCallback_(std::move(configChangedCallback)) {
@@ -332,7 +332,7 @@ void ProjectsPanel::editSelectedProject() {
         }
     }
     const auto options = chooseBackupItemOptions(
-        config_, 1, BackupItemOptionsDialogInput{root->backupMode, initial});
+        config_, 1, BackupItemOptionsDialogInput{root->backupMode, initial, true});
     if (!options.has_value()) {
         return;
     }
@@ -353,8 +353,15 @@ void ProjectsPanel::editSelectedProject() {
         for (const std::string& destinationId : options->destinationIds) {
             updatedConfig.routes.push_back(BackupRoute{project->source.id, destinationId});
         }
+        const std::string projectId = project->source.id;
         configStore_.save(updatedConfig);
         config_ = std::move(updatedConfig);
+        for (const std::string& destinationId : options->destinationIds) {
+            if (initial.followSymbolicLinks != options->followSymbolicLinks ||
+                std::ranges::find(initial.destinationIds, destinationId) == initial.destinationIds.end()) {
+                stateStore_.markRouteDirty(projectId, destinationId);
+            }
+        }
         configChangedCallback_();
         refresh();
         resultSummary_->copy_label("Project options saved.");

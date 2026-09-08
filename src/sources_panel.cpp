@@ -63,7 +63,7 @@ namespace {
 using Ui::styleButton;
 
 [[nodiscard]] UiTheme::BackupStatus sourceStatus(const ManualSource& source, const BackupConfig& config,
-                                                  const StateStore& stateStore) {
+                                                  StateStore& stateStore) {
     bool hasRoute = false;
     UiTheme::BackupStatus status = UiTheme::BackupStatus::current;
     for (const BackupRoute& route : config.routes) {
@@ -106,7 +106,7 @@ using Ui::styleButton;
 }  // namespace
 
 SourcesPanel::SourcesPanel(int x, int y, int width, int height, BackupConfig& config, const ConfigStore& configStore,
-                           const StateStore& stateStore, std::function<void()> configChangedCallback)
+                           StateStore& stateStore, std::function<void()> configChangedCallback)
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
       stateStore_(stateStore), configChangedCallback_(std::move(configChangedCallback)) {
     box(FL_FLAT_BOX);
@@ -280,7 +280,7 @@ void SourcesPanel::editSelectedSource() {
             initial.destinationIds.push_back(route.destinationId);
         }
     }
-    const auto options = chooseBackupItemOptions(config_, 1, BackupItemOptionsDialogInput{std::nullopt, initial});
+    const auto options = chooseBackupItemOptions(config_, 1, BackupItemOptionsDialogInput{std::nullopt, initial, true});
     if (!options.has_value()) {
         return;
     }
@@ -294,8 +294,17 @@ void SourcesPanel::editSelectedSource() {
         for (const std::string& destinationId : options->destinationIds) {
             updatedConfig.routes.push_back(BackupRoute{source->id, destinationId});
         }
+        const bool backupContentsChanged = source->backupMode != options->backupMode ||
+                                           source->followSymbolicLinks != options->followSymbolicLinks;
+        const std::string sourceId = source->id;
         configStore_.save(updatedConfig);
         config_ = std::move(updatedConfig);
+        for (const std::string& destinationId : options->destinationIds) {
+            if (backupContentsChanged || std::ranges::find(initial.destinationIds, destinationId) ==
+                                             initial.destinationIds.end()) {
+                stateStore_.markRouteDirty(sourceId, destinationId);
+            }
+        }
         configChangedCallback_();
         refresh();
         resultSummary_->copy_label("Source options saved.");

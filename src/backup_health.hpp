@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "backup_config.hpp"
+#include "backup_routes.hpp"
 #include "projects_scanner.hpp"
 #include "state_store.hpp"
 
@@ -46,28 +47,8 @@ struct BackupHealth {
             health.lastSuccess = state->lastSuccessUtc;
         }
     };
-    for (const auto& route : config.routes) {
-        if (!std::ranges::any_of(config.destinations, [&](const Destination& destination) {
-            return destination.id == route.destinationId;
-        })) { continue; }
-        if (std::ranges::any_of(config.manualSources, [&](const ManualSource& source) { return source.id == route.sourceId; })) {
-            inspect(route.sourceId, route.destinationId);
-        } else if (std::ranges::any_of(projects, [&](const ConfiguredProjectsSource& project) {
-                       return project.source.id == route.sourceId;
-                   })) {
-            inspect(route.sourceId, route.destinationId);
-        } else {
-            for (const auto& project : projects) {
-                const bool hasExplicitRoute = std::ranges::any_of(config.routes, [&](const BackupRoute& projectRoute) {
-                    return projectRoute.sourceId == project.source.id;
-                }) || std::ranges::any_of(config.watchedProjects, [&](const WatchedProject& watchedProject) {
-                    return watchedProject.id == project.source.id;
-                });
-                if (!hasExplicitRoute && project.rootId == route.sourceId) {
-                    inspect(project.source.id, route.destinationId);
-                }
-            }
-        }
+    for (const BackupRoute& route : effectiveBackupRoutes(config, projects)) {
+        inspect(route.sourceId, route.destinationId);
     }
     return health;
 }

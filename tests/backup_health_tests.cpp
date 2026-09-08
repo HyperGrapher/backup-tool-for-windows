@@ -64,3 +64,51 @@ TEST_CASE("Deferred projects wait across destinations without blocking unrelated
     REQUIRE(plans.size() == 2);
     REQUIRE(DeferredProjectBackups{}.empty());
 }
+
+TEST_CASE("Deselected and removed routes do not contribute pending work or errors") {
+    BackupConfig config;
+    config.manualSources.push_back({"source", "C:/source"});
+    config.destinations.push_back({"selected", "Drive", DestinationKind::path, "D:/copies"});
+    config.destinations.push_back({"deselected", "Other", DestinationKind::path, "E:/copies"});
+    config.routes.push_back({"source", "selected"});
+    RouteRuntimeState current{"source", "selected"};
+    current.isDirty = false;
+    current.status = RouteStatus::synced;
+    current.lastSuccessUtc = "2026-09-07T10:00:00Z";
+    RouteRuntimeState stale{"source", "deselected"};
+    stale.isDirty = true;
+    stale.status = RouteStatus::error;
+    RouteRuntimeState removed{"removed-source", "selected"};
+    removed.isDirty = true;
+    removed.status = RouteStatus::error;
+    const auto health = backupHealth(config, {}, {current, stale, removed});
+    REQUIRE(health.expected == 1);
+    REQUIRE(health.pending == 0);
+    REQUIRE(health.failed == 0);
+    REQUIRE(isActiveBackupRoute(config, {}, "source", "selected"));
+    REQUIRE_FALSE(isActiveBackupRoute(config, {}, "source", "deselected"));
+    REQUIRE_FALSE(isActiveBackupRoute(config, {}, "removed-source", "selected"));
+    config.destinations.clear();
+    REQUIRE(effectiveBackupRoutes(config, {}).empty());
+}
+
+TEST_CASE("Projects inherit parent routes only until explicitly configured") {
+    BackupConfig config;
+    config.projectsRoots.push_back({"root", "C:/projects"});
+    config.destinations.push_back({"first", "First", DestinationKind::path, "D:/copies"});
+    config.destinations.push_back({"second", "Second", DestinationKind::path, "E:/copies"});
+    config.routes = {{"root", "first"}, {"root", "second"}};
+    const std::vector<ConfiguredProjectsSource> projects{{"root", {"project", "C:/projects/project"}}};
+    REQUIRE(effectiveBackupRoutes(config, projects).size() == 2);
+    REQUIRE(isActiveBackupRoute(config, projects, "project", "first"));
+    REQUIRE_FALSE(isActiveBackupRoute(config, projects, "root", "first"));
+    config.watchedProjects.push_back({"project"});
+    REQUIRE(effectiveBackupRoutes(config, projects).empty());
+    config.routes.push_back({"project", "second"});
+    REQUIRE(effectiveBackupRoutes(config, projects).size() == 1);
+    REQUIRE_FALSE(isActiveBackupRoute(config, projects, "project", "first"));
+    REQUIRE(isActiveBackupRoute(config, projects, "project", "second"));
+    REQUIRE(backupHealth(config, projects, {}).expected == 1);
+    config.projectsRoots.clear();
+    REQUIRE(effectiveBackupRoutes(config, projects).empty());
+}

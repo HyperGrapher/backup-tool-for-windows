@@ -10,6 +10,7 @@
 #include <FL/Fl_Double_Window.H>
 
 #include "activity_panel.hpp"
+#include "backup_options_dialog.hpp"
 #include "config_store.hpp"
 #include "destinations_panel.hpp"
 #include "overview_panel.hpp"
@@ -56,6 +57,30 @@ int main(int argc, char** argv) {
     Fl::background(20, 29, 34);
     Fl::background2(29, 42, 48);
     Fl::foreground(237, 242, 236);
+    if (argc > 1 && std::string_view{argv[1]} == "--options") {
+        config.destinations.clear();
+        const bool many = argc > 2 && std::string_view{argv[2]} == "many";
+        for (int index = 0; index < (many ? 12 : 2); ++index) {
+            config.destinations.push_back({std::to_string(index), "BackItUp", DestinationKind::path,
+                std::filesystem::path{index == 0 ? "C:/Users/Example/Documents/BackItUp" :
+                "D:/Backups/Work and personal documents/Projects/Long destination folder for checking readable full paths/BackItUp"}});
+        }
+        struct CaptureContext { std::filesystem::path path; } context{
+            directory / (many ? "options-many.png" : "options-few.png")};
+        Fl::add_timeout(0.15, [](void* value) {
+            auto& captureContext = *static_cast<CaptureContext*>(value);
+            auto* dialog = Fl::first_window();
+            Fl_Image_Surface surface(dialog->w(), dialog->h());
+            Fl_Surface_Device::push_current(&surface);
+            surface.draw(dialog);
+            std::unique_ptr<Fl_RGB_Image> rendered(surface.image());
+            Fl_Surface_Device::pop_current();
+            (void)fl_write_png(captureContext.path.string().c_str(), rendered.get());
+            dialog->hide();
+        }, &context);
+        const auto options = chooseBackupItemOptions(config, 1, {});
+        return 0;
+    }
     Fl_Double_Window window(1040, 680, "BackItUpTool â€” UI Preview (no backups run)");
     window.color(UiTheme::kBackground);
     window.size_range(860, 560);
@@ -72,7 +97,7 @@ int main(int argc, char** argv) {
                                       [&] { select(1); }, [&] { select(3); }));
     panels.push_back(new SourcesPanel(156, 52, 884, 602, config, store, state, changed));
     panels.push_back(new ProjectsPanel(156, 52, 884, 602, config, store, state, changed));
-    panels.push_back(new DestinationsPanel(156, 52, 884, 602, config, store, state, changed));
+    panels.push_back(new DestinationsPanel(156, 52, 884, 602, config, store, state, projects, changed));
     panels.push_back(new ActivityPanel(156, 52, 884, 602, config, state));
     panels.push_back(new SettingsPanel(156, 52, 884, 602, config, store, changed, [] {}, [] {}));
     struct Navigation { std::function<void()> callback; };

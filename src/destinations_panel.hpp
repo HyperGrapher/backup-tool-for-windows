@@ -10,6 +10,7 @@
 
 #include "backup_config.hpp"
 #include "connected_volume.hpp"
+#include "projects_scanner.hpp"
 
 class ConfigStore;
 class Fl_Box;
@@ -21,7 +22,8 @@ class StateStore;
 class DestinationsPanel final : public Fl_Group {
 public:
     DestinationsPanel(int x, int y, int width, int height, BackupConfig& config, const ConfigStore& configStore,
-                      const StateStore& stateStore, std::function<void()> configChangedCallback);
+                      const StateStore& stateStore, const std::vector<ConfiguredProjectsSource>& projects,
+                      std::function<void()> configChangedCallback);
 
     void refresh();
 
@@ -29,6 +31,7 @@ private:
     BackupConfig& config_;
     const ConfigStore& configStore_;
     const StateStore& stateStore_;
+    const std::vector<ConfiguredProjectsSource>& projects_;
     std::function<void()> configChangedCallback_;
     Fl_Choice* connectedDriveChoice_{};
     Fl_Button* addUsbButton_{};

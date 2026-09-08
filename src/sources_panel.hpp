@@ -21,14 +21,14 @@ class StateStore;
 class SourcesPanel final : public Fl_Group {
 public:
     SourcesPanel(int x, int y, int width, int height, BackupConfig& config, const ConfigStore& configStore,
-                 const StateStore& stateStore, std::function<void()> configChangedCallback);
+                 StateStore& stateStore, std::function<void()> configChangedCallback);
 
     void refresh();
 
 private:
     BackupConfig& config_;
     const ConfigStore& configStore_;
-    const StateStore& stateStore_;
+    StateStore& stateStore_;
     std::function<void()> configChangedCallback_;
     Fl_Input* searchInput_{};
     Fl_Button* removeButton_{};

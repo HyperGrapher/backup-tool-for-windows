@@ -20,6 +20,7 @@
 #include <FL/platform.H>
 
 #include "config_store.hpp"
+#include "backup_routes.hpp"
 #include "native_file_dialog.hpp"
 #include "state_store.hpp"
 #include "ui_theme.hpp"
@@ -62,9 +63,10 @@ using Ui::styleButton;
 
 DestinationsPanel::DestinationsPanel(int x, int y, int width, int height, BackupConfig& config,
                                      const ConfigStore& configStore, const StateStore& stateStore,
+                                     const std::vector<ConfiguredProjectsSource>& projects,
                                      std::function<void()> configChangedCallback)
     : Fl_Group(x, y, width, height), config_(config), configStore_(configStore),
-      stateStore_(stateStore), configChangedCallback_(std::move(configChangedCallback)) {
+      stateStore_(stateStore), projects_(projects), configChangedCallback_(std::move(configChangedCallback)) {
     box(FL_FLAT_BOX);
     color(UiTheme::kBackground);
     begin();
@@ -112,7 +114,13 @@ void DestinationsPanel::refresh() {
     try {
         refreshConnectedDrives();
         std::vector<TableRow> rows;
-        const std::vector<RouteRuntimeState> states = stateStore_.routeStates();
+        std::vector<RouteRuntimeState> states = stateStore_.routeStates();
+        const auto routes = effectiveBackupRoutes(config_, projects_);
+        std::erase_if(states, [&](const RouteRuntimeState& state) {
+            return !std::ranges::any_of(routes, [&](const BackupRoute& route) {
+                return route.sourceId == state.sourceId && route.destinationId == state.destinationId;
+            });
+        });
 
         for (const Destination& destination : config_.destinations) {
             bool isAvailable = true;
@@ -146,11 +154,17 @@ void DestinationsPanel::refresh() {
             const std::string pendingText = hasError
                                                 ? std::to_string(pendingCount) + " · needs attention"
                                                 : std::to_string(pendingCount);
+            std::string errors;
+            for (const auto& state : states) {
+                if (state.destinationId == destination.id && state.status == RouteStatus::error) {
+                    errors += "\n" + state.sourceId + ": " + state.lastError.value_or("Backup failed; retry the backup.");
+                }
+            }
             rows.push_back({destination.id, {destination.name + "\n" + location, availability,
                                              pendingText, freeSpace},
                            destination.name + "\n" + location + "\n" + availability + "\n" +
                            pendingText + " pending backups\nFree space: " + freeSpace +
-                           (hasError ? "\nAt least one route needs attention; see Activity for details." : "")});
+                           errors});
         }
         destinationBrowser_->setRows(std::move(rows));
         const std::string summary = std::to_string(config_.destinations.size()) + " configured Destinations";

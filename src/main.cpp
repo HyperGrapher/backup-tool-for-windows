@@ -42,6 +42,7 @@
 #include "config_store.hpp"
 #include "backup_engine.hpp"
 #include "backup_health.hpp"
+#include "backup_routes.hpp"
 #include "deferred_project_backups.hpp"
 #include "ui_helpers.hpp"
 #include "backup_notification.hpp"
@@ -195,14 +196,7 @@ void configureLogging(const std::filesystem::path& dataDirectory) {
 [[nodiscard]] BackupConfig loadOrCreateConfig(const ConfigStore& store) {
     const bool doesConfigExist = std::filesystem::exists(store.path());
     BackupConfig config = store.load();
-    const std::vector<BackupRoute> previousRoutes = config.routes;
-    // Migrate older configurations that predate explicit destination selection. New
-    // items create their own routes and later edits preserve the user's choices.
-    if (config.routes.empty() && !config.destinations.empty() &&
-        (!config.manualSources.empty() || !config.projectsRoots.empty())) {
-        rebuildBackupRoutes(config);
-    }
-    if (!doesConfigExist || config.routes != previousRoutes) {
+    if (!doesConfigExist) {
         store.save(config);
     }
     return config;
@@ -674,7 +668,7 @@ private:
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
             [this] { handleConfigChanged(); });
         destinationsPanel_ = new DestinationsPanel(
-            panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
+            panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_, projectsSources_,
             [this] { handleConfigChanged(); });
         projectsPanel_ = new ProjectsPanel(
             panelX, panelY, panelWidth, panelHeight, config_, configStore_, stateStore_,
@@ -792,41 +786,10 @@ private:
     }
 
     void initializeRouteStates() {
-        for (const BackupRoute& route : config_.routes) {
-            const bool isManualSource = std::ranges::any_of(config_.manualSources, [&](const ManualSource& source) {
-                return source.id == route.sourceId;
-            });
-            if (isManualSource) {
-                const std::optional<RouteRuntimeState> state =
-                    stateStore_.routeState(route.sourceId, route.destinationId);
-                if (!state.has_value() || !state->lastSuccessUtc.has_value()) {
-                    stateStore_.markRouteDirty(route.sourceId, route.destinationId);
-                }
-                continue;
-            }
-            const bool isExplicitProject = std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
-                return source.source.id == route.sourceId;
-            });
-            if (isExplicitProject) {
-                const std::optional<RouteRuntimeState> state =
-                    stateStore_.routeState(route.sourceId, route.destinationId);
-                if (!state.has_value() || !state->lastSuccessUtc.has_value()) {
-                    stateStore_.markRouteDirty(route.sourceId, route.destinationId);
-                }
-                continue;
-            }
-            for (const ConfiguredProjectsSource& projectsSource : projectsSources_) {
-                const std::optional<RouteRuntimeState> state =
-                    stateStore_.routeState(projectsSource.source.id, route.destinationId);
-                const bool hasExplicitRoute = std::ranges::any_of(config_.routes, [&](const BackupRoute& projectRoute) {
-                    return projectRoute.sourceId == projectsSource.source.id;
-                }) || std::ranges::any_of(config_.watchedProjects, [&](const WatchedProject& project) {
-                    return project.id == projectsSource.source.id;
-                });
-                if (!hasExplicitRoute && projectsSource.rootId == route.sourceId &&
-                    (!state.has_value() || !state->lastSuccessUtc.has_value())) {
-                    stateStore_.markRouteDirty(projectsSource.source.id, route.destinationId);
-                }
+        for (const BackupRoute& route : effectiveBackupRoutes(config_, projectsSources_)) {
+            const auto state = stateStore_.routeState(route.sourceId, route.destinationId);
+            if (!state.has_value() || !state->lastSuccessUtc.has_value()) {
+                stateStore_.markRouteDirty(route.sourceId, route.destinationId);
             }
         }
     }
@@ -857,6 +820,7 @@ private:
                                                          &WatchedProject::id);
             const bool followSymbolicLinks = projectOption != config_.watchedProjects.end() &&
                                              projectOption->followSymbolicLinks;
+            target.followSymbolicLinks = followSymbolicLinks;
             auto changeFilter = std::make_shared<ProjectChangeFilter>(projectsSource.source.path,
                                                                        followSymbolicLinks);
             target.isRelevantChange = [changeFilter](const std::filesystem::path& relativePath) {
@@ -895,14 +859,8 @@ private:
 
     void markSourceDirty(const std::string& sourceId) {
         std::size_t markedCount = 0;
-        for (const BackupRoute& route : config_.routes) {
-            bool matchesSource = route.sourceId == sourceId;
-            if (!matchesSource) {
-                matchesSource = std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
-                    return source.source.id == sourceId && source.rootId == route.sourceId;
-                });
-            }
-            if (!matchesSource) {
+        for (const BackupRoute& route : effectiveBackupRoutes(config_, projectsSources_)) {
+            if (route.sourceId != sourceId) {
                 continue;
             }
             stateStore_.markRouteDirty(sourceId, route.destinationId);
@@ -1131,25 +1089,7 @@ private:
     }
 
     [[nodiscard]] bool isConfiguredRouteState(const RouteRuntimeState& state) const {
-        return std::ranges::any_of(config_.routes, [&](const BackupRoute& route) {
-            if (route.destinationId != state.destinationId) {
-                return false;
-            }
-            if (route.sourceId == state.sourceId) {
-                return true;
-            }
-            return std::ranges::any_of(projectsSources_, [&](const ConfiguredProjectsSource& source) {
-                if (source.rootId != route.sourceId || source.source.id != state.sourceId) {
-                    return false;
-                }
-                const bool hasExplicitRoute = std::ranges::any_of(config_.routes, [&](const BackupRoute& projectRoute) {
-                    return projectRoute.sourceId == state.sourceId;
-                }) || std::ranges::any_of(config_.watchedProjects, [&](const WatchedProject& project) {
-                    return project.id == state.sourceId;
-                });
-                return !hasExplicitRoute;
-            });
-        });
+        return isActiveBackupRoute(config_, projectsSources_, state.sourceId, state.destinationId);
     }
 
     [[nodiscard]] bool hasPendingBackupWork() const {

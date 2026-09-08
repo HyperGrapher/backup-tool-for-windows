@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include <FL/Fl_Check_Button.H>
 #include <FL/Fl_Double_Window.H>
@@ -25,6 +26,7 @@ struct BackupItemOptions {
 struct BackupItemOptionsDialogInput {
     std::optional<BackupMode> fixedBackupMode;
     BackupItemOptions initial;
+    bool isEditing{};
 };
 
 [[nodiscard]] inline std::optional<BackupItemOptions> chooseBackupItemOptions(
@@ -46,10 +48,20 @@ struct BackupItemOptionsDialogInput {
         return std::nullopt;
     }
 
-    const bool isEditing = !input.initial.destinationIds.empty();
-    const int destinationRowHeight = 30;
-    const int destinationHeight = std::clamp(static_cast<int>(config.destinations.size()) * destinationRowHeight, 90, 210);
-    const int dialogHeight = destinationHeight + (input.fixedBackupMode.has_value() ? 300 : 390);
+    const bool isEditing = input.isEditing;
+    std::vector<int> destinationRowHeights;
+    int destinationContentHeight = 16;
+    fl_font(UiTheme::kUiFont, 13);
+    for (const auto& destination : config.destinations) {
+        int labelWidth = 592;
+        int labelHeight = 0;
+        fl_measure(Ui::pathText(destination.root).c_str(), labelWidth, labelHeight);
+        const int rowHeight = std::max(36, labelHeight + 16);
+        destinationRowHeights.push_back(rowHeight);
+        destinationContentHeight += rowHeight;
+    }
+    const int destinationHeight = std::clamp(destinationContentHeight, 88, 216);
+    const int dialogHeight = destinationHeight + (input.fixedBackupMode.has_value() ? 326 : 398);
     Fl_Double_Window dialog(720, dialogHeight, isEditing ? "Edit backup options" : "Choose backup options");
     dialog.color(UiTheme::kBackground);
     const std::string heading = isEditing ? "Update these backup options" :
@@ -72,6 +84,7 @@ struct BackupItemOptionsDialogInput {
     } else {
         Ui::label(24, y, 672, 24, "Backup mode", 13, UiTheme::kSecondaryText);
         y += 28;
+        auto* modes = new Fl_Group(24, y, 664, 30);
         state.mirror = new Fl_Round_Button(24, y, 318, 30, "Mirror");
         state.zipped = new Fl_Round_Button(370, y, 318, 30, "Zipped");
         for (auto* option : {state.mirror, state.zipped}) {
@@ -80,10 +93,9 @@ struct BackupItemOptionsDialogInput {
             option->labelfont(UiTheme::kUiFontSemibold);
             option->labelsize(13);
             option->selection_color(UiTheme::kPrimary);
-            option->callback([](Fl_Widget*, void* context) {
-                static_cast<DialogState*>(context)->confirm->activate();
-            }, &state);
+
         }
+        modes->end();
         (input.initial.backupMode == BackupMode::mirror ? state.mirror : state.zipped)->value(1);
         Ui::label(24, y + 34, 664, 40,
                   "Mirror keeps a browsable latest copy. Zipped creates compressed snapshots with history.", 12,
@@ -105,17 +117,21 @@ struct BackupItemOptionsDialogInput {
     Ui::label(24, y, 664, 24, "Destinations", 13, UiTheme::kSecondaryText);
     y += 28;
     auto* destinationScroll = new Fl_Scroll(24, y, 664, destinationHeight);
+    destinationScroll->type(Fl_Scroll::VERTICAL);
     destinationScroll->box(FL_FLAT_BOX);
     destinationScroll->color(UiTheme::kSurface);
     destinationScroll->begin();
+    int destinationY = y + 8;
     for (std::size_t index = 0; index < config.destinations.size(); ++index) {
         const Destination& destination = config.destinations[index];
-        const std::string destinationLabel = destination.name + "  —  " + Ui::pathText(destination.root);
+        const std::string destinationLabel = Ui::pathText(destination.root);
         auto* check = new Fl_Check_Button(destinationScroll->x() + 12,
-                                          destinationScroll->y() + static_cast<int>(index) * destinationRowHeight + 4,
-                                          destinationScroll->w() - 32, destinationRowHeight - 4);
+                                          destinationY, destinationScroll->w() - 40, destinationRowHeights[index]);
+        destinationY += destinationRowHeights[index];
         check->copy_label(destinationLabel.c_str());
-        const bool selected = input.initial.destinationIds.empty() ||
+        check->copy_tooltip(destinationLabel.c_str());
+        check->align(FL_ALIGN_LEFT | FL_ALIGN_INSIDE | FL_ALIGN_WRAP);
+        const bool selected = (!isEditing && input.initial.destinationIds.empty()) ||
                               std::ranges::find(input.initial.destinationIds, destination.id) !=
                                   input.initial.destinationIds.end();
         check->value(selected ? 1 : 0);
@@ -137,6 +153,7 @@ struct BackupItemOptionsDialogInput {
         state.destinationIds.push_back(destination.id);
     }
     destinationScroll->end();
+    destinationScroll->resizable(nullptr);
     y += destinationHeight + 26;
 
     auto* cancel = new ActionButton(448, y, 112, 36, "Cancel");
@@ -154,6 +171,9 @@ struct BackupItemOptionsDialogInput {
             if (dialogState->destinations[index]->value()) {
                 result.destinationIds.push_back(dialogState->destinationIds[index]);
             }
+        }
+        if (result.destinationIds.empty()) {
+            return;
         }
         dialogState->result = std::move(result);
         widget->window()->hide();

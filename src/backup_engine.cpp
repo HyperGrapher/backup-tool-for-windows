@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "backup_routes.hpp"
 #include "connected_volume.hpp"
 #include "projects_scanner.hpp"
 #include "state_store.hpp"
@@ -90,13 +91,9 @@ namespace {
 }
 
 [[nodiscard]] DWORD runRobocopy(const std::filesystem::path& source, const std::filesystem::path& target,
-                                 const std::filesystem::path& logPath, bool followSymbolicLinks) {
+                                 const std::filesystem::path& logPath) {
     std::wstring command = L"robocopy.exe " + quoteArgument(source) + L" " + quoteArgument(target);
-    command += L" /MIR ";
-    if (!followSymbolicLinks) {
-        command += L"/XJ ";
-    }
-    command += L"/FFT /R:1 /W:2 /NFL /NDL /NP /NJH /NJS /LOG+:" + quoteArgument(logPath);
+    command += L" /MIR /XJ /FFT /R:1 /W:2 /NFL /NDL /NP /NJH /NJS /LOG+:" + quoteArgument(logPath);
     std::vector<wchar_t> writable(command.begin(), command.end());
     writable.push_back(L'\0');
     STARTUPINFOW startup{};
@@ -119,53 +116,27 @@ namespace {
     return exitCode;
 }
 
-void runTarZip(const std::filesystem::path& source, const std::filesystem::path& archivePath) {
-    const std::filesystem::path parent = source.parent_path();
-    const std::filesystem::path name = source.filename();
-    std::wstring command = L"tar.exe -a -c --options zip:compression-level=9 -f " + quoteArgument(archivePath) +
-                           L" -C " + quoteArgument(parent) + L" " + quoteArgument(name);
-    std::vector<wchar_t> writable(command.begin(), command.end());
-    writable.push_back(L'\0');
-    STARTUPINFOW startup{};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_USESHOWWINDOW;
-    startup.wShowWindow = SW_HIDE;
-    PROCESS_INFORMATION process{};
-    if (CreateProcessW(nullptr, writable.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup,
-                       &process) == FALSE) {
-        throw std::runtime_error("Unable to start Windows tar for the ZIP archive.");
-    }
-    WaitForSingleObject(process.hProcess, INFINITE);
-    DWORD exitCode{};
-    const BOOL receivedCode = GetExitCodeProcess(process.hProcess, &exitCode);
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    if (receivedCode == FALSE || exitCode != 0) {
-        throw std::runtime_error("ZIP archive creation failed.");
-    }
-}
-
-void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path& archivePath,
-                      std::optional<std::uint64_t> maximumFileSizeBytes, bool followSymbolicLinks) {
-    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes, followSymbolicLinks);
+void runTarZip(const std::filesystem::path& source, const std::filesystem::path& archivePath,
+               const std::vector<std::filesystem::path>& relativePaths, bool followSymbolicLinks) {
     const std::filesystem::path listPath = std::filesystem::temp_directory_path() /
                                            (L"BackItUpTool-" + std::filesystem::path{generateUuid()}.wstring() +
                                             L".txt");
     try {
         std::ofstream list{listPath, std::ios::binary | std::ios::trunc};
         if (!list) {
-            throw std::runtime_error("Unable to create the Project archive file list.");
+            throw std::runtime_error("Unable to create the archive file list.");
         }
-        for (const EligibleProjectFile& file : contents.files) {
-            list << pathToGenericUtf8(source.path.filename() / file.relativePath) << '\n';
+        for (const std::filesystem::path& relativePath : relativePaths) {
+            list << pathToGenericUtf8((relativePath.empty() ? source.filename() : source.filename() / relativePath)) << '\n';
         }
         list.close();
         if (!list) {
-            throw std::runtime_error("Unable to write the Project archive file list.");
+            throw std::runtime_error("Unable to write the archive file list.");
         }
 
-        std::wstring command = L"tar.exe -a -c --options zip:compression-level=9 -f " +
-                               quoteArgument(archivePath) + L" -C " + quoteArgument(source.path.parent_path()) +
+        std::wstring command = L"tar.exe -a -c --no-recursion --options zip:compression-level=9 " +
+                               std::wstring{followSymbolicLinks ? L"-h " : L""} + L"-f " +
+                               quoteArgument(archivePath) + L" -C " + quoteArgument(source.parent_path()) +
                                L" -T " + quoteArgument(listPath);
         std::vector<wchar_t> writable(command.begin(), command.end());
         writable.push_back(L'\0');
@@ -176,7 +147,7 @@ void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path&
         PROCESS_INFORMATION process{};
         if (CreateProcessW(nullptr, writable.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr,
                            &startup, &process) == FALSE) {
-            throw std::runtime_error("Unable to start Windows tar for the Project ZIP archive.");
+            throw std::runtime_error("Unable to start Windows tar for the ZIP archive.");
         }
         WaitForSingleObject(process.hProcess, INFINITE);
         DWORD exitCode{};
@@ -184,7 +155,7 @@ void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path&
         CloseHandle(process.hThread);
         CloseHandle(process.hProcess);
         if (receivedCode == FALSE || exitCode != 0) {
-            throw std::runtime_error("Project ZIP archive creation failed.");
+            throw std::runtime_error("ZIP archive creation failed.");
         }
     } catch (...) {
         std::error_code ignoredError;
@@ -193,6 +164,53 @@ void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path&
     }
     std::error_code ignoredError;
     std::filesystem::remove(listPath, ignoredError);
+}
+
+void runProjectTarZip(const ProjectsSource& source, const std::filesystem::path& archivePath,
+                      std::optional<std::uint64_t> maximumFileSizeBytes, bool followSymbolicLinks) {
+    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes, followSymbolicLinks);
+    std::vector<std::filesystem::path> relativePaths;
+    relativePaths.reserve(contents.files.size());
+    for (const EligibleProjectFile& file : contents.files) {
+        relativePaths.push_back(file.relativePath);
+    }
+    runTarZip(source.path, archivePath, relativePaths, followSymbolicLinks);
+}
+
+[[nodiscard]] std::vector<std::filesystem::path> collectSourcePaths(const BackupPlan& plan) {
+    std::vector<std::filesystem::path> relativePaths{std::filesystem::path{}};
+    if (plan.sourceKind == ManualSourceKind::folder) {
+        const auto options = plan.followSymbolicLinks
+                                 ? std::filesystem::directory_options::follow_directory_symlink
+                                 : std::filesystem::directory_options::none;
+        std::set<std::filesystem::path> visitedDirectories{std::filesystem::canonical(plan.source)};
+        for (std::filesystem::recursive_directory_iterator iterator{plan.source, options}, end;
+             iterator != end; ++iterator) {
+            const auto& entry = *iterator;
+            const DWORD attributes = GetFileAttributesW(entry.path().c_str());
+            const bool isReparsePoint = attributes != INVALID_FILE_ATTRIBUTES &&
+                                        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+            if (isReparsePoint && (!plan.followSymbolicLinks || !entry.is_symlink())) {
+                iterator.disable_recursion_pending();
+                continue;
+            }
+            if (entry.is_directory()) {
+                // Limit traversal ourselves so archive creation cannot follow a link cycle.
+                if (!visitedDirectories.insert(std::filesystem::canonical(entry.path())).second) {
+                    iterator.disable_recursion_pending();
+                    continue;
+                }
+            } else if (!entry.is_regular_file()) {
+                continue;
+            }
+            relativePaths.push_back(entry.path().lexically_relative(plan.source));
+        }
+    }
+    return relativePaths;
+}
+
+void runSourceTarZip(const BackupPlan& plan, const std::filesystem::path& archivePath) {
+    runTarZip(plan.source, archivePath, collectSourcePaths(plan), plan.followSymbolicLinks);
 }
 
 [[nodiscard]] std::string utcFilenameStamp() {
@@ -256,16 +274,19 @@ void pruneArchives(std::string_view sourceId, std::string_view destinationId, St
     return difference > std::chrono::seconds{2};
 }
 
-void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::path& destination,
-                           std::optional<std::uint64_t> maximumFileSizeBytes, bool followSymbolicLinks) {
-    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes, followSymbolicLinks);
+void mirrorContents(const std::filesystem::path& source, const std::filesystem::path& destination,
+                    const std::vector<std::filesystem::path>& relativePaths) {
     std::filesystem::create_directories(destination);
     std::set<std::filesystem::path> eligiblePaths;
-    for (const EligibleProjectFile& file : contents.files) {
-        const std::filesystem::path normalizedRelativePath = file.relativePath.lexically_normal();
+    for (const std::filesystem::path& relativePath : relativePaths) {
+        const std::filesystem::path normalizedRelativePath = relativePath.lexically_normal();
         eligiblePaths.insert(normalizedRelativePath);
         const std::filesystem::path target = destination / normalizedRelativePath;
-        const std::filesystem::path sourcePath = source.path / normalizedRelativePath;
+        const std::filesystem::path sourcePath = source / normalizedRelativePath;
+        if (std::filesystem::is_directory(sourcePath)) {
+            std::filesystem::create_directories(target);
+            continue;
+        }
         if (!shouldCopyFile(sourcePath, target)) {
             continue;
         }
@@ -309,10 +330,23 @@ void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::
     });
     for (const std::filesystem::path& directory : directories) {
         std::error_code ignoredError;
-        if (std::filesystem::is_empty(directory, ignoredError) && !ignoredError) {
+        const auto relativePath = directory.lexically_relative(destination).lexically_normal();
+        if (!eligiblePaths.contains(relativePath) && std::filesystem::is_empty(directory, ignoredError) &&
+            !ignoredError) {
             std::filesystem::remove(directory, ignoredError);
         }
     }
+}
+
+void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::path& destination,
+                           std::optional<std::uint64_t> maximumFileSizeBytes, bool followSymbolicLinks) {
+    const ProjectContents contents = collectProjectContents(source, maximumFileSizeBytes, followSymbolicLinks);
+    std::vector<std::filesystem::path> relativePaths;
+    relativePaths.reserve(contents.files.size());
+    for (const EligibleProjectFile& file : contents.files) {
+        relativePaths.push_back(file.relativePath);
+    }
+    mirrorContents(source.path, destination, relativePaths);
 }
 
 [[nodiscard]] std::optional<std::uint64_t> projectMaximumFileSize(const BackupPlan& plan,
@@ -323,15 +357,6 @@ void mirrorProjectContents(const ProjectsSource& source, const std::filesystem::
         return std::nullopt;
     }
     return largeFileThresholdBytes;
-}
-
-[[nodiscard]] bool hasExplicitProjectRoute(const BackupConfig& config, std::string_view projectId) {
-    return std::ranges::any_of(config.routes, [&](const BackupRoute& route) {
-               return route.sourceId == projectId;
-           }) ||
-           std::ranges::any_of(config.watchedProjects, [&](const WatchedProject& project) {
-               return project.id == projectId;
-           });
 }
 
 [[nodiscard]] bool projectFollowsSymbolicLinks(const BackupConfig& config, std::string_view projectId) {
@@ -448,7 +473,7 @@ std::vector<BackupPlan> BackupEngine::previewBackups(
             if (configuredSource.rootId != route.sourceId) {
                 continue;
             }
-            if (hasExplicitProjectRoute(config, configuredSource.source.id)) {
+            if (hasExplicitProjectRoutes(config, configuredSource.source.id)) {
                 continue;
             }
             const ProjectsSource& source = configuredSource.source;
@@ -555,11 +580,12 @@ BackupRunSummary BackupEngine::runMirrors(const std::vector<BackupPlan>& plans, 
                     std::filesystem::create_directories(plan.destination.parent_path());
                     std::filesystem::copy_file(plan.source, plan.destination,
                                                std::filesystem::copy_options::overwrite_existing);
+                } else if (plan.followSymbolicLinks) {
+                    mirrorContents(plan.source, plan.destination, collectSourcePaths(plan));
                 } else {
                     std::filesystem::create_directories(plan.destination);
                     exitCode = runRobocopy(plan.source, plan.destination,
-                                           logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"),
-                                           plan.followSymbolicLinks);
+                                           logDirectory / (plan.sourceId + "-" + plan.destinationId + ".log"));
                 }
                 if (exitCode >= 8) {
                     const std::string message = "Mirror failed for " + pathToUtf8(plan.source) + " (robocopy " +
@@ -643,7 +669,7 @@ void BackupEngine::createArchive(const BackupPlan& plan, StateStore& stateStore,
                          projectMaximumFileSize(plan, stateStore, largeFileThresholdBytes),
                          plan.followSymbolicLinks);
     } else {
-        runTarZip(plan.source, archivePath);
+        runSourceTarZip(plan, archivePath);
     }
     stateStore.recordArchive(plan.sourceId, plan.destinationId, utcNow(), archivePath,
                              std::filesystem::file_size(archivePath));

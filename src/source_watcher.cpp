@@ -8,6 +8,8 @@
 #include <chrono>
 #include <cwctype>
 #include <optional>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -24,6 +26,73 @@ constexpr DWORD kChangeFilter = FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANG
     return text;
 }
 
+struct LinkedFileState {
+    std::filesystem::file_time_type modified;
+    std::uintmax_t size{};
+    bool operator==(const LinkedFileState&) const = default;
+};
+using LinkedSnapshot = std::map<std::filesystem::path, LinkedFileState>;
+
+[[nodiscard]] std::vector<std::filesystem::path> findSymbolicLinks(const std::filesystem::path& root) {
+    std::vector<std::filesystem::path> links;
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator iterator{
+             root, std::filesystem::directory_options::skip_permission_denied, error}, end;
+         !error && iterator != end; iterator.increment(error)) {
+        if (iterator->is_symlink(error) && !error) {
+            links.push_back(iterator->path());
+            iterator.disable_recursion_pending();
+        }
+    }
+    return links;
+}
+
+void snapshotLinkedPath(const std::filesystem::path& path, const std::filesystem::path& sourceRoot,
+                        const SourceWatchTarget::ChangeFilter& filter, std::set<std::filesystem::path>& visited,
+                        LinkedSnapshot& snapshot) {
+    std::error_code error;
+    const auto canonical = std::filesystem::weakly_canonical(path, error);
+    if (error || !visited.insert(canonical).second) {
+        return;
+    }
+    if (std::filesystem::is_directory(path, error) && !error) {
+        for (std::filesystem::directory_iterator iterator{
+                 path, std::filesystem::directory_options::skip_permission_denied, error}, end;
+             !error && iterator != end; iterator.increment(error)) {
+            snapshotLinkedPath(iterator->path(), sourceRoot, filter, visited, snapshot);
+        }
+        return;
+    }
+    if (!std::filesystem::is_regular_file(path, error) || error) {
+        return;
+    }
+    const auto relative = path.lexically_relative(sourceRoot);
+    if (filter && !filter(relative)) {
+        return;
+    }
+    const auto modified = std::filesystem::last_write_time(path, error);
+    if (error) {
+        return;
+    }
+    const auto size = std::filesystem::file_size(path, error);
+    if (!error) {
+        snapshot.emplace(relative, LinkedFileState{modified, size});
+    }
+}
+
+[[nodiscard]] LinkedSnapshot snapshotLinks(const std::vector<std::filesystem::path>& links,
+                                           const std::filesystem::path& sourceRoot,
+                                           const SourceWatchTarget::ChangeFilter& filter) {
+    LinkedSnapshot snapshot;
+    for (const auto& link : links) {
+        std::set<std::filesystem::path> visited;
+        std::error_code error;
+        visited.insert(std::filesystem::weakly_canonical(sourceRoot, error));
+        snapshotLinkedPath(link, sourceRoot, filter, visited, snapshot);
+    }
+    return snapshot;
+}
+
 }  // namespace
 
 struct SourceWatcher::Registration {
@@ -31,6 +100,10 @@ struct SourceWatcher::Registration {
     std::filesystem::path directory;
     bool isRecursive{true};
     SourceWatchTarget::ChangeFilter isRelevantChange;
+    bool followSymbolicLinks{};
+    std::vector<std::filesystem::path> symbolicLinks;
+    LinkedSnapshot linkedSnapshot;
+    std::chrono::steady_clock::time_point nextLinkCheck;
     HANDLE handle{INVALID_HANDLE_VALUE};
     OVERLAPPED overlapped{};
     std::array<std::byte, 64 * 1024> buffer{};
@@ -48,6 +121,7 @@ SourceWatchTarget makeSourceWatchTarget(const ManualSource& source) {
     target.sourceId = source.id;
     target.directory = source.kind == ManualSourceKind::folder ? source.path : source.path.parent_path();
     target.isRecursive = source.kind == ManualSourceKind::folder;
+    target.followSymbolicLinks = target.isRecursive && source.followSymbolicLinks;
     if (source.kind == ManualSourceKind::file) {
         const std::wstring watchedFileName = lowercase(source.path.filename().native());
         target.isRelevantChange = [watchedFileName](const std::filesystem::path& relativePath) {
@@ -87,6 +161,13 @@ void SourceWatcher::start(const std::vector<SourceWatchTarget>& targets, int deb
         registration->directory = target.directory;
         registration->isRecursive = target.isRecursive;
         registration->isRelevantChange = target.isRelevantChange;
+        registration->followSymbolicLinks = target.followSymbolicLinks;
+        if (target.followSymbolicLinks) {
+            registration->symbolicLinks = findSymbolicLinks(target.directory);
+            registration->linkedSnapshot = snapshotLinks(registration->symbolicLinks, target.directory,
+                                                         target.isRelevantChange);
+            registration->nextLinkCheck = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        }
 
         registrations_.push_back(std::move(registration));
     }
@@ -157,6 +238,9 @@ void SourceWatcher::watchLoop() {
                 }
                 offset += change->NextEntryOffset;
             }
+            if (registration.followSymbolicLinks) {
+                registration.symbolicLinks = findSymbolicLinks(registration.directory);
+            }
             if (isRelevant) {
                 registration.lastChange = std::chrono::steady_clock::now();
             }
@@ -167,6 +251,20 @@ void SourceWatcher::watchLoop() {
 
         const auto now = std::chrono::steady_clock::now();
         for (const std::unique_ptr<Registration>& registration : registrations_) {
+            // Windows directory notifications do not follow links to external targets.
+            if (registration->followSymbolicLinks && now >= registration->nextLinkCheck) {
+                try {
+                    auto snapshot = snapshotLinks(registration->symbolicLinks, registration->directory,
+                                                  registration->isRelevantChange);
+                    if (snapshot != registration->linkedSnapshot) {
+                        registration->lastChange = now;
+                        registration->linkedSnapshot = std::move(snapshot);
+                    }
+                } catch (...) {
+                    registration->lastChange = now;
+                }
+                registration->nextLinkCheck = now + std::chrono::seconds{2};
+            }
             if (!registration->lastChange.has_value() || now - *registration->lastChange < debounce_) {
                 continue;
             }

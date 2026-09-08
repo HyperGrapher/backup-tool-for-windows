@@ -1,6 +1,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <process.h>
+#include <string>
+
+#include <catch2/generators/catch_generators.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -315,4 +319,89 @@ TEST_CASE("manual folder routes do not show the Project size warning") {
 
     std::error_code cleanupError;
     std::filesystem::remove_all(testRoot, cleanupError);
+}
+
+TEST_CASE("backups include link targets only when following links and stop directory cycles") {
+    const BackupMode mode = GENERATE(BackupMode::mirror, BackupMode::zipped);
+    const bool isProject = GENERATE(false, true);
+    const bool followLinks = GENERATE(false, true);
+    const auto suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path testRoot = std::filesystem::temp_directory_path() /
+                                          ("back-it-up-link-archive-test-" + std::to_string(suffix));
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() {
+            std::error_code error;
+            std::filesystem::remove_all(path, error);
+        }
+    } cleanup{testRoot};
+    const auto source = testRoot / "source";
+    const auto external = testRoot / "external";
+    const auto destination = testRoot / "destination";
+    const auto extracted = testRoot / "extracted";
+    std::filesystem::create_directories(source / "empty");
+    std::filesystem::create_directories(external);
+    std::filesystem::create_directories(destination);
+    std::filesystem::create_directories(extracted);
+    std::ofstream{source / "ordinary.txt"} << "ordinary";
+    std::ofstream{external / "linked.txt"} << "linked target contents";
+    std::error_code linkError;
+    std::filesystem::create_symlink(external / "linked.txt", source / "file-link.txt", linkError);
+    if (linkError) {
+        SKIP("Creating symbolic links requires Windows Developer Mode or administrator privileges.");
+    }
+    std::filesystem::create_directory_symlink(external, source / "folder-link");
+    std::filesystem::create_directory_symlink(source, external / "cycle");
+
+    BackupConfig config;
+    std::vector<ConfiguredProjectsSource> projects;
+    if (isProject) {
+        config.projectsRoots.push_back(ProjectsRoot{"root", testRoot, mode});
+        config.watchedProjects.push_back(WatchedProject{"source", followLinks});
+        projects.push_back(ConfiguredProjectsSource{"root", ProjectsSource{"source", source}});
+    } else {
+        config.manualSources.push_back(
+            ManualSource{"source", source, ManualSourceKind::folder, mode, followLinks});
+    }
+    config.destinations.push_back(Destination{"destination", "Destination", DestinationKind::path, destination});
+    config.routes.push_back(BackupRoute{"source", "destination"});
+    StateStore stateStore{testRoot / "state.db"};
+    stateStore.markRouteDirty("source", "destination");
+    BackupEngine engine;
+    std::filesystem::path restoredSource;
+    if (mode == BackupMode::zipped) {
+        const auto plans = engine.previewPendingArchives(config, projects, stateStore);
+        REQUIRE(plans.size() == 1);
+        REQUIRE(engine.runArchives(plans, stateStore, config.settings.largeFileThresholdBytes).succeeded == 1);
+        const auto archives = stateStore.archiveRecords("source", "destination");
+        REQUIRE(archives.size() == 1);
+        REQUIRE(_wspawnlp(_P_WAIT, L"tar.exe", L"tar.exe", L"-x", L"-f", archives.front().archivePath.c_str(),
+                          L"-C", extracted.c_str(), nullptr) == 0);
+        restoredSource = extracted / "source";
+    } else {
+        const auto plans = engine.previewPendingMirrors(config, projects, stateStore);
+        REQUIRE(plans.size() == 1);
+        REQUIRE(engine.runMirrors(plans, stateStore, testRoot / "logs", config.settings.largeFileThresholdBytes)
+                    .succeeded == 1);
+        restoredSource = plans.front().destination;
+    }
+    REQUIRE(std::filesystem::is_regular_file(restoredSource / "ordinary.txt"));
+    if (followLinks) {
+        for (const auto& relative : {std::filesystem::path{"file-link.txt"},
+                                     std::filesystem::path{"folder-link"} / "linked.txt"}) {
+            const auto file = restoredSource / relative;
+            REQUIRE_FALSE(std::filesystem::is_symlink(file));
+            std::ifstream input{file};
+            std::string contents;
+            std::getline(input, contents);
+            REQUIRE(contents == "linked target contents");
+        }
+        REQUIRE_FALSE(std::filesystem::exists(restoredSource / "folder-link" / "cycle"));
+    } else {
+        REQUIRE_FALSE(std::filesystem::exists(restoredSource / "file-link.txt"));
+        REQUIRE_FALSE(std::filesystem::exists(restoredSource / "folder-link"));
+    }
+    if (!isProject) {
+        REQUIRE(std::filesystem::is_directory(restoredSource / "empty"));
+    }
 }

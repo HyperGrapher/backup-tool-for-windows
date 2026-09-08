@@ -66,7 +66,7 @@ SettingsPanel::SettingsPanel(int x, int y, int width, int height, BackupConfig& 
               "Default: 50 MiB. Projects set to skip large files use this limit in future backups.", 13, UiTheme::kSecondaryText);
     largeFileError_ = Ui::label(x + 24, y + 262, 560, 22, "", 12, UiTheme::kError);
     Ui::label(x + 24, y + 296, 560, 28, "Windows integration", 16, UiTheme::kText, UiTheme::kUiFontSemibold);
-    launchAtStartupCheckbox_ = new Fl_Check_Button(x + 24, y + 330, 560, 32, "Start BackItUpTool with Windows, in the tray");
+    launchAtStartupCheckbox_ = new Fl_Check_Button(x + 24, y + 330, 560, 32, "  Start BackItUpTool with Windows, in the tray");
     launchAtStartupCheckbox_->color(UiTheme::kBackground);
     launchAtStartupCheckbox_->selection_color(UiTheme::kPrimary);
     launchAtStartupCheckbox_->labelcolor(UiTheme::kText);
